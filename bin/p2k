@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run a proteus2kicad tool with the system python3:  p2k TOOL [ARGS...]
+# (e.g. `p2k ipc356 --check`). Tools that need pcbnew run under `kipy -m p2k.TOOL`.
+# The board repo is found from the current directory (p2k_config.py) or $P2K_BOARD.
+P2K_HOME="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+[ $# -ge 1 ] || { echo "usage: p2k TOOL [ARGS...]  (tools: $(cd "$P2K_HOME/p2k" && ls *.py | sed 's/\.py$//' | grep -v '^_' | tr '\n' ' '))" >&2; exit 2; }
+tool="$1"; shift
+PYTHONPATH="$P2K_HOME${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m "p2k.$tool" "$@"

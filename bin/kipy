@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The KiCad AppImage's python3.11 with the pcbnew bindings and the p2k package importable.
+P2K_HOME="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+source "$P2K_HOME/bin/kicad_env.sh" || exit 1
+PYTHONPATH="$P2K_HOME:$KICAD_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" exec "$KICAD_MOUNT/bin/python3.11" "$@"
