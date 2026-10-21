@@ -5,11 +5,13 @@
   * per copper layer: ViaPad flashes = IPC vias, ComponentPad flashes = IPC component THT
     pads, OtherPad flashes = IPC free pads + holes, SMDPad flashes = IPC SMD pads of that
     side, each flash within TOL of an IPC record of the right kind;
-  * drill gerbers: ViaDrill / ComponentDrill / plated OtherDrill / NonPlated flashes match
-    the IPC drills (position within TOL, diameter equal);
+  * drill gerbers: ViaDrill / ComponentDrill / plated OtherDrill (free pads, plated holes) /
+    NonPlated (unplated holes) flashes match the IPC drills (position within TOL, diameter
+    equal);
   * the outline gerber spans the OUTLINE_RECT of p2k_config.py.
 
-Config keys: CADCAM, COPPER, DRILL_PLATED, DRILL_NONPLATED, OUTLINE, OUTLINE_RECT.
+Config keys: CADCAM, COPPER, DRILL_PLATED, DRILL_NONPLATED (None: no unplated drill file),
+OUTLINE, OUTLINE_RECT; HOLES_PLATED (ipc356) says which drill file has the mounting holes.
 Stdlib only (reads reference/ipc356_pads.json, so run `p2k ipc356` first).
 """
 import glob
@@ -87,10 +89,14 @@ def main():
     fl = [o for o in g.objects if isinstance(o, gerber.Flash)]
     match([f for f in fl if f.ap.function == "ViaDrill"], by_kind("via"), "ViaDrill", errors, True)
     match([f for f in fl if f.ap.function == "ComponentDrill"], tht_pads, "ComponentDrill", errors, True)
-    match([f for f in fl if f.ap.function.startswith("OtherDrill")], by_kind("free_pad"), "plated OtherDrill", errors, True)
-    g = gerber.parse(path(CFG.DRILL_NONPLATED))
-    match([o for o in g.objects if isinstance(o, gerber.Flash)], by_kind("hole"), "NonPlated drill", errors, True)
-    summary.append(f"drills: {len(fl)} plated, {len(by_kind('hole'))} non-plated")
+    plated_other = by_kind("free_pad", "hole") if CFG.HOLES_PLATED else by_kind("free_pad")
+    match([f for f in fl if f.ap.function.startswith("OtherDrill")], plated_other, "plated OtherDrill", errors, True)
+    unplated = []
+    if CFG.DRILL_NONPLATED:
+        g = gerber.parse(path(CFG.DRILL_NONPLATED))
+        unplated = [o for o in g.objects if isinstance(o, gerber.Flash)]
+    match(unplated, [] if CFG.HOLES_PLATED else by_kind("hole"), "NonPlated drill", errors, True)
+    summary.append(f"drills: {len(fl)} plated, {len(unplated)} non-plated")
 
     g = gerber.parse(path(CFG.OUTLINE))
     pts = [(d.x1, d.y1) for d in g.objects] + [(d.x2, d.y2) for d in g.objects]

@@ -69,7 +69,7 @@ Plain Python at the board repo root (no TOML: the system python3 may be < 3.11).
 | `HOLE_DRILLS`, `HOLES_PLATED` | ipc356 | blank refdes, no net: mounting holes |
 | `EXPECTED_IPC` | ipc356 | counts asserted by `--check` (nets, records, refdes_raw, tht/smd records, smd_top/bottom, nc_pads, vias, free_pads, holes, parts) |
 | `COPPER` | check_sources, PCB tools | `[(gerber name, KiCad layer, User layer for pour outlines), ...]` top to bottom |
-| `DRILL_PLATED`, `DRILL_NONPLATED`, `OUTLINE` | check_sources | gerber names of the drill files and the outline |
+| `DRILL_PLATED`, `DRILL_NONPLATED`, `OUTLINE` | check_sources | gerber names of the drill files (`DRILL_NONPLATED = None` when Proteus wrote none) and the outline |
 | `OUTLINE_RECT` | check_sources | `(x, y, width, height)` mm of the board outline |
 
 Coordinates are mm in the IPC / Gerber frame (Y up); KiCad (x, y) = (x, −y).
