@@ -6,8 +6,8 @@ PCB is rebuilt from the Proteus Gerber X2 export, and every check compares again
 IPC-D-356A netlist of the CADCAM export.
 
 Extracted from the `ac_psu_kicad` migration (single_phase_inverter_psu_v3) and used by
-`tube_psu_kicad` (tube_power_5_1). The method is described in the playbook of
-`ac_psu_kicad` (`CONVERSION_PLAYBOOK.md`; to be moved here).
+`tube_psu_kicad` (tube_power_5_1). The method – phases, checks, pitfalls, model and session
+plan, regression test for tool changes – is in [`CONVERSION_PLAYBOOK.md`](CONVERSION_PLAYBOOK.md).
 
 ## Use in a board repository
 
