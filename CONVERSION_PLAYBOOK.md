@@ -14,9 +14,10 @@ scripted checks, with every generated file reproducible from scripts.
 ## 1. Principles
 
 1. **The IPC-D-356A netlist is the source of truth.** The Proteus project file
-   (`.pdsprj` = zip of binary `ROOT.DSN` / `ROOT.LYT`) cannot be parsed. The CADCAM
-   export's IPC-D-356A file is the only machine-readable link between parts, pins, nets and
-   pad coordinates. Every check compares against it.
+   (`.pdsprj` = zip of binary `ROOT.DSN` / `ROOT.LYT`) is only partly readable
+   (`p2k.pdsprj`: values, devices, packages, pinouts – no geometry or wiring). The CADCAM
+   export's IPC-D-356A file is the machine-readable link between parts, pins, nets and pad
+   coordinates. Every check compares against it.
 2. **Refdes and pin ids stay identical to the IPC file.** Symbol pin numbers and footprint
    pad numbers must equal the IPC pin ids (`A`/`C` on diodes, Proteus pin order on
    transistors and regulators, …). Then every script can match by `(refdes, pin)`.
@@ -42,7 +43,7 @@ scripted checks, with every generated file reproducible from scripts.
 | CADCAM output, Gerber X2, metric, all layers incl. Top/Bottom Assembly and Mechanical (outline) | Copper, pours, vias, silk reference. Check `TF.SameCoordinates`. |
 | Drill (Proteus may write it as a gerber, not Excellon) | Vias and pad holes. |
 | **IPC-D-356A netlist** (tick it in the CADCAM dialog) | Nets, refdes, pin ids, pad positions/sizes/sides. Without it this plan does not work. |
-| The `.pdsprj` | Only for `strings` (part numbers, package names). |
+| The `.pdsprj` | Schematic values, Proteus devices, packages and pin names (`p2k.pdsprj`). |
 | BOM if available | Values / part numbers the PDF does not show legibly. |
 
 Things to check in the inventory (write them into PLAN.md section 1):
