@@ -86,7 +86,11 @@ Done when: the parser counts match the inventory and the cheat sheet exists.
 
 Preparation (one session):
 
-1. `lib/part_map.csv`: refdes → sheet, symbol, value (from PDF text layer + `strings`).
+1. `lib/part_map.csv`: refdes → sheet, symbol, value. `p2k.pdsprj` reads the schematic
+   values from ROOT.DSN (they equal the PDF; the layout values in ROOT.LYT can be stale),
+   device and package from ROOT.LYT, and the Proteus pin names from the DSN pinouts;
+   `p2k.pdftext` finds the PDF page of each refdes (resolve the ambiguous ones on the renders:
+   refdes-like net labels, hand notes, hidden refdes).
 2. `tools/gen_symbols.py` → `lib/<proj>.kicad_sym`: copy KiCad standard symbols (flattened,
    pins renumbered to the IPC ids) or draw box symbols with the Proteus pin names; power
    symbols named after the IPC power nets. `--check` = file up to date.
@@ -186,8 +190,8 @@ scripts; the shared code has no board names in it.
 | In proteus2kicad (shared) | In the board repo |
 |---|---|
 | `sexpr`, `geom2d`, `gerber`, `fpgeom`, `sch_builder`, `render_sheet`, `ipc356`, `check_sources`, `bin/kipy`, `bin/kicad-cli`, `bin/p2k` | `p2k_config.py`, `tools/check_all.sh`, `tools/erc.sh` |
-| to move (still in `ac_psu_kicad/tools`, importing from `p2k`): `compare_netlists`, `check_symbols`, `make_skeleton`, the generator part of `gen_symbols` | `tools/sheets/sheetNN.py` (written fresh), the symbol list, `lib/part_map.csv` |
-| to move: `check_footprints`, the generator part of `gen_footprints` | footprint `RULES` and project footprints |
+| `check_symbols`, `compare_netlists`, `make_skeleton`, `symgen` (symbol generator helpers), `sheetkit` (sheet-script helpers), `pdsprj` (values, layout records, pinouts from the .pdsprj), `pdftext` (PDF words, refdes pages) | `tools/gen_symbols.py` (the symbol list), `lib/part_map.csv` and its generator, `tools/sheets/sheetNN.py` (written fresh) and board-specific sheet helpers |
+| to move (still in `ac_psu_kicad/tools`): `check_footprints`, the generator part of `gen_footprints` | footprint `RULES` and project footprints |
 | to move: `gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `board_common`, `build_pcb`, `check_board`, `drc`, `gerber_roundtrip`, `ipc356_diff`, `make_pcb.sh` | design rules, mounting-hole footprint, `ACCEPTED` DRC types, project exceptions (no-net pins such as ac_psu R87-4/5) → config keys |
 
 Moving a tool: put it under `p2k/`, replace hard-coded board values by `p2k_config.py` keys
