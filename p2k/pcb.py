@@ -120,6 +120,17 @@ def export_netlist():
     return comps, nets
 
 
+def drill_smaller_accepted(d_proteus, d_kicad, tol=0.005):
+    """Reason from the DRILL_SMALLER config key ({(proteus_mm, kicad_mm): reason}) when a KiCad
+    drill smaller than the Proteus drill is an accepted (recorded, reversible) decision; None
+    otherwise. Both diameters are matched within tol (file roundings: 1.0668 / 1.066, KiCad's
+    IPC-D-356 0.0001 inch quantum 1.5011 / 1.5)."""
+    for (a, b), why in (getattr(cfg(), "DRILL_SMALLER", {}) or {}).items():
+        if abs(a - d_proteus) <= tol and abs(b - d_kicad) <= tol:
+            return why
+    return None
+
+
 def is_unconnected_net(name):
     """KiCad's per-pin nets of unconnected symbol pins (no-connect flags)."""
     return not name or name.startswith("unconnected-(")

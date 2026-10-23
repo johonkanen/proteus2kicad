@@ -64,11 +64,12 @@ footprint rules and project footprints, `lib/`, `reference/`, `kicad/`, `reports
 | `pours_to_zones` | Proteus pours (region + stroke − clear holes) → filled zones | `kipy -m p2k.pours_to_zones` |
 | `check_board` | saved board vs IPC: pads, mounting holes, free pads, vias (position, size, net 1:1), every copper item has a net; `main(added=, extra_vias=)` for later design revisions | `kipy -m p2k.check_board` |
 | `drc` | `kicad-cli pcb drc --schematic-parity`: fails on shorts, unconnected, parity and error types not in `DRC_ACCEPTED` | `p2k drc` |
+| `ipc356_diff` | Phase 4: `kicad-cli pcb export ipcd356` of the board vs the Proteus IPC-D-356A: every pad / via / hole / free pad matched within 0.05 mm, side, THT/SMD, plating, drill (KiCad larger OK, smaller only per `DRILL_SMALLER`), nets 1:1 by pad sets, N/C equal, stacked via records (`STACKED_VIAS`); `main(added=, extra_vias=)` for later revisions | `p2k ipc356_diff` |
+| `gerber_roundtrip` | Phase 4: KiCad copper gerbers + drills vs the Proteus gerbers: raster XOR per layer with tolerance, difference clusters classified (pad shape / clearance / zone fill / deviation / other = finding), centre-line coverage of every draw and flash both ways, plated + non-plated drills (stacked records, `DRILL_SMALLER`), optional Excellon cross-check (`DRILL_EXCELLON`); `reports/roundtrip/` report + overlay PNGs; `--check` fails on other / uncovered / drill mismatch; `main(in_area=, extra_vias=)` | `p2k gerber_roundtrip [--check]` (numpy, scipy, PIL) |
 
 The board repo runs the PCB steps in its `tools/make_pcb.sh` (build_pcb, gerber_to_tracks,
-assign_nets, pours_to_zones). Still only in `ac_psu_kicad/tools`, moved here when the next
-board needs them: `gerber_roundtrip`, `ipc356_diff`. `erc.sh`, `check_all.sh` and
-`make_pcb.sh` stay in each board repo.
+assign_nets, pours_to_zones). `erc.sh`, `check_all.sh` and `make_pcb.sh` stay in each board
+repo.
 
 `kipy -m p2k.TOOL` runs a tool under KiCad's python (the AppImage python ignores
 `PYTHONPATH`, so `kipy` inserts the package through `runpy`); `kipy SCRIPT.py` runs a board
@@ -103,5 +104,9 @@ Plain Python at the board repo root (no TOML: the system python3 may be < 3.11).
 | `FREE_PAD_FOOTPRINT`, `FREE_PAD_VALUE`, `FREE_PAD_PREFIX` | build_pcb | board-only one-pad footprint for the IPC `free_pad` records (pad on the IPC net), refdes prefix (default `FP`); only needed when there are free pads |
 | `DRC_ACCEPTED` | drc | `{violation type: reason}` error types that remain by design (e.g. courtyard overlaps of a Proteus placement) |
 | `OFF_BOARD_PARTS` | footprints | optional `{refdes: note}`: parts of `lib/part_map.csv` without IPC pads (not on the board); every other part without pads is an error |
+| `STACKED_VIAS` | ipc356_diff, gerber_roundtrip | optional (default 0): number of Proteus via records stacked on an already recorded via position (one drill, one KiCad via); both checks require exactly this many |
+| `DRILL_SMALLER` | ipc356_diff, gerber_roundtrip | optional `{(proteus_mm, kicad_mm): reason}`: KiCad footprint drills smaller than the Proteus drill that are a recorded decision (reported, not failed; matched within 0.005 mm). A larger KiCad drill is always only reported |
+| `DRILL_EXCELLON` | gerber_roundtrip | optional: Excellon drill file of another Proteus export of the same board, compared 1:1 with the plated + non-plated drill gerbers |
+| `ROUNDTRIP` | gerber_roundtrip | optional dict overriding `res` 0.025 (raster mm/px), `tol` 0.05, `min_area` 0.01 mm², `overlay_res` 0.1, `drill_tol` 0.005; the clearance and zone minimum width come from `PCB_RULES` (`clearance`, `min_track`) |
 
 Coordinates are mm in the IPC / Gerber frame (Y up); KiCad (x, y) = (x, −y).

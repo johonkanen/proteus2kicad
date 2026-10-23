@@ -202,7 +202,7 @@ scripts; the shared code has no board names in it.
 | `check_symbols`, `compare_netlists`, `make_skeleton`, `symgen` (symbol generator helpers), `sheetkit` (sheet-script helpers), `pdsprj` (values, layout records, pinouts from the .pdsprj), `pdftext` (PDF words, refdes pages) | `tools/gen_symbols.py` (the symbol list), `lib/part_map.csv` and its generator, `tools/sheets/sheetNN.py` (written fresh) and board-specific sheet helpers |
 | `footprints` (generator: rules matcher, derive / build footprints, map), `check_footprints` | `tools/gen_footprints.py` = footprint `RULES` and `PROJECT` specs, `FOOTPRINT_PAD_SIZES` / `OFF_BOARD_PARTS` config keys |
 | `pcb` (paths, netlist export, net map), `build_pcb`, `gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `check_board`, `drc` | `tools/make_pcb.sh`, `PCB_RULES` / `PCB_THICKNESS` / `HOLE_*` / `FREE_PAD_*` / `DRC_ACCEPTED` config keys, board-only footprint specs |
-| to move: `gerber_roundtrip`, `ipc356_diff` | tolerances, expected differences → config keys |
+| `gerber_roundtrip`, `ipc356_diff` (Phase 4) | `STACKED_VIAS`, `DRILL_SMALLER`, `DRILL_EXCELLON`, `ROUNDTRIP` config keys; deviation hooks (`in_area`, `added`, `extra_vias`) for later revisions |
 
 Moving a tool: put it under `p2k/`, replace hard-coded board values by `p2k_config.py` keys
 (document them in README.md), grep for refdes and net names of the old board
@@ -226,7 +226,10 @@ Proteus exports:
 - Thermal reliefs = a clear hole around the pad + spoke **tracks**. Pads in a pour without a
   hole are connected solid.
 - Proteus may stack identical vias on one spot (tube_psu: 16 duplicate GND via records at 12
-  positions): one drill hole, one KiCad via.
+  positions): one drill hole, one KiCad via (`STACKED_VIAS` for the Phase 4 checks).
+- KiCad's IPC-D-356 export writes unplated holes as `367` records (`D...U`, refdes of the
+  footprint, no pin), unplated copper rings as `WasherPad` flashes in the gerbers, and
+  coordinates in 0.0001 inch (positions off by up to 0.0013 mm, drills 1.5 → 1.5011).
 - Copper gerbers contain the board outline as a `Profile` aperture draw – skip it.
 - Non-conductor graphics may sit on copper layers (`NonConductor` aperture) – import as
   graphics without a net.
