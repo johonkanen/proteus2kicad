@@ -141,15 +141,18 @@ oddities found by the fit (e.g. a SOT-23 that only fits with renumbered pins).
 
 ### Phase 3 – PCB (1–2 days)
 
-`tools/make_pcb.sh` runs, in order, re-creating the board from scratch every time:
+`tools/make_pcb.sh` (board repo) runs the shared tools in order (`kipy -m p2k.<step>`), re-creating
+the board from scratch every time; `make_pcb.sh --check` rebuilds into a temporary directory
+(with a copy of the `.kicad_pro`: pcbnew loads the project next to the board, which changes the
+seeded UUID sequence) and compares byte for byte:
 
 | Step | Script | What |
 |---|---|---|
-| 3a | `build_pcb.py` | Board with the Proteus origin (KiCad y = −IPC y), layers, design rules = Proteus values, outline from Mechanical, footprints from the netlist with nets and symbol links (DRC parity), placed from `footprint_fit.csv`, mounting holes at the IPC hole records. |
-| 3b | `gerber_to_tracks.py` | Conductor `D01` draws → tracks; ViaPad flash + drill → vias; pad flashes skipped (footprints provide them) but checked to land on a pad; positive `G36` outlines → User layers (pour reference). **Pour edge strokes are not tracks.** |
-| 3c | `assign_nets.py` | Geometric union-find over pads, tracks, vias, pours; each group takes its pads' net; report shorts, orphans, opens. `--check` repeats on the saved board after zone fill. |
-| 3d | `pours_to_zones.py` | One zone per Proteus pour: outline = region grown by half the stroke minus clear holes shrunk by half the stroke (keeps clearance cut-outs and thermal-relief holes), net from 3c, solid pad connection, priority = draw order; fill. |
-| check | `check_board.py`, `drc.py` | Pads/vias/holes vs IPC (position, net 1:1); DRC with schematic parity: fail on shorts, unconnected, parity, and error types not in an explicit `ACCEPTED` list. |
+| 3a | `build_pcb` | Board with the Proteus origin (KiCad y = −IPC y), layers, design rules = Proteus values (`PCB_RULES`, measure the smallest gaps first), outline from Mechanical, footprints from the netlist with nets and symbol links (DRC parity), placed from `footprint_fit.csv`, mounting holes at the IPC hole records and free pads at the IPC free-pad records (board-only footprints, `board_only` specs in gen_footprints). |
+| 3b | `gerber_to_tracks` | Conductor `D01` draws → tracks; ViaPad flash + drill → vias (size from the flash; stacked duplicate vias become one); pad flashes skipped (footprints provide them) but checked to land on a pad; positive `G36` outlines → User layers (pour reference). **Pour edge strokes are not tracks.** |
+| 3c | `assign_nets` | Geometric union-find over pads, tracks, vias, pours; each group takes its pads' net; report shorts, orphans, opens. `--check` repeats on the saved board after zone fill. |
+| 3d | `pours_to_zones` | One zone per Proteus pour: outline = region grown by half the stroke minus clear holes shrunk by half the stroke (keeps clearance cut-outs and thermal-relief holes), net from 3c, solid pad connection, priority = draw order; fill. |
+| check | `check_board`, `drc` | Pads/vias/holes/free pads vs IPC (position, size, net 1:1); DRC with schematic parity: fail on shorts, unconnected, parity, and error types not in `DRC_ACCEPTED`. |
 
 Expect the first DRC to show shorts/clearance errors where KiCad pads are larger than the
 Proteus pads and reach Proteus tracks → ask the user: Proteus pad sizes for those
@@ -198,7 +201,8 @@ scripts; the shared code has no board names in it.
 | `sexpr`, `geom2d`, `gerber`, `fpgeom`, `sch_builder`, `render_sheet`, `ipc356`, `check_sources`, `bin/kipy`, `bin/kicad-cli`, `bin/p2k` | `p2k_config.py`, `tools/check_all.sh`, `tools/erc.sh` |
 | `check_symbols`, `compare_netlists`, `make_skeleton`, `symgen` (symbol generator helpers), `sheetkit` (sheet-script helpers), `pdsprj` (values, layout records, pinouts from the .pdsprj), `pdftext` (PDF words, refdes pages) | `tools/gen_symbols.py` (the symbol list), `lib/part_map.csv` and its generator, `tools/sheets/sheetNN.py` (written fresh) and board-specific sheet helpers |
 | `footprints` (generator: rules matcher, derive / build footprints, map), `check_footprints` | `tools/gen_footprints.py` = footprint `RULES` and `PROJECT` specs, `FOOTPRINT_PAD_SIZES` / `OFF_BOARD_PARTS` config keys |
-| to move: `gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `board_common`, `build_pcb`, `check_board`, `drc`, `gerber_roundtrip`, `ipc356_diff`, `make_pcb.sh` | design rules, mounting-hole footprint, `ACCEPTED` DRC types, project exceptions (no-net pins such as ac_psu R87-4/5) → config keys |
+| `pcb` (paths, netlist export, net map), `build_pcb`, `gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `check_board`, `drc` | `tools/make_pcb.sh`, `PCB_RULES` / `PCB_THICKNESS` / `HOLE_*` / `FREE_PAD_*` / `DRC_ACCEPTED` config keys, board-only footprint specs |
+| to move: `gerber_roundtrip`, `ipc356_diff` | tolerances, expected differences → config keys |
 
 Moving a tool: put it under `p2k/`, replace hard-coded board values by `p2k_config.py` keys
 (document them in README.md), grep for refdes and net names of the old board
@@ -221,6 +225,8 @@ Proteus exports:
   grown by half the stroke minus holes shrunk by half the stroke.
 - Thermal reliefs = a clear hole around the pad + spoke **tracks**. Pads in a pour without a
   hole are connected solid.
+- Proteus may stack identical vias on one spot (tube_psu: 16 duplicate GND via records at 12
+  positions): one drill hole, one KiCad via.
 - Copper gerbers contain the board outline as a `Profile` aperture draw – skip it.
 - Non-conductor graphics may sit on copper layers (`NonConductor` aperture) – import as
   graphics without a net.

@@ -33,6 +33,9 @@ PROJECT = {name: spec}; spec keys
   rotate     degrees: build the IPC-only footprint in a frame rotated by this angle (a part
              placed at 45 deg on the board gets an axis-aligned footprint)
   descr      description text
+  board_only True: a one-pad footprint for board-only items (mounting holes, free pads; used
+             by p2k.build_pcb, not by a symbol): pad = (diameter, drill), plated (bool),
+             number (pad number, "" for an unplated hole); not reported as unused
 
 p2k_config.py keys
   PROJECT              library nickname (lib/<PROJECT>.pretty, "<PROJECT>:<name>")
@@ -326,11 +329,33 @@ def from_ipc(name, spec, ipc):
     return node
 
 
+def single_pad(name, spec):
+    """Board-only one-pad footprint (mounting hole / free pad), round pad on every copper layer."""
+    dia, drill = spec["pad"]
+    plated = spec.get("plated", True)
+    r = dia / 2
+    node = [Sym("footprint"), name, [Sym("version"), FILE_VERSION], [Sym("generator"), f"{project()}_gen_footprints"],
+            [Sym("layer"), "F.Cu"], [Sym("descr"), f"{spec['descr']} ({project()}, board-only)"],
+            [Sym("property"), "Reference", "REF**", [Sym("at"), 0, _r4(-r - 1.2), 0], [Sym("layer"), "F.SilkS"], _eff()],
+            [Sym("property"), "Value", name, [Sym("at"), 0, _r4(r + 1.2), 0], [Sym("layer"), "F.Fab"], _eff()],
+            [Sym("attr"), *([Sym("through_hole")] if plated else []), Sym("board_only"),
+             Sym("exclude_from_pos_files"), Sym("exclude_from_bom")],
+            _circle(r, "Fab", 0.1), _circle(r + 0.25, "CrtYd", 0.05),
+            [Sym("pad"), spec.get("number", "1" if plated else ""), Sym("thru_hole" if plated else "np_thru_hole"),
+             Sym("circle"), [Sym("at"), 0, 0], [Sym("size"), dia, dia], [Sym("drill"), drill],
+             [Sym("layers"), "*.Cu", "*.Mask"]],
+            [Sym("embedded_fonts"), Sym("no")]]
+    return node
+
+
 def build_library(project_fps, ipc=None):
     ipc = ipc or fpgeom.ipc_pads_by_refdes()
     out = {}
     for name, spec in project_fps.items():
-        node = derive(name, spec, ipc) if spec.get("base") else from_ipc(name, spec, ipc)
+        if spec.get("board_only"):
+            node = single_pad(name, spec)
+        else:
+            node = derive(name, spec, ipc) if spec.get("base") else from_ipc(name, spec, ipc)
         out[name + ".kicad_mod"] = sexpr.dump(node) + "\n"
     return out
 
@@ -405,7 +430,7 @@ def run(rules, project_fps, argv=None, added=None):
     elif mode != "kicad":
         raise SystemExit(f"footprints: FOOTPRINT_PAD_SIZES must be 'kicad' or 'proteus', not {mode!r}")
     used = {fp.split(":", 1)[1] for fp, _ in assignment.values() if fp.startswith(proj + ":")}
-    unused = sorted(set(project_fps) - used)
+    unused = sorted(set(project_fps) - used - {n for n, sp in project_fps.items() if sp.get("board_only")})
     undefined = sorted(used - set(project_fps))
     for n in unused:
         errors.append(f"project footprint {n} is not used")
