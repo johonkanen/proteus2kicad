@@ -47,6 +47,8 @@ footprint rules and project footprints, `lib/`, `reference/`, `kicad/`, `reports
 | `check_symbols` | every refdes of `lib/part_map.csv`: symbol pin set = IPC pin set; power symbols are IPC nets | python3 |
 | `compare_netlists` | KiCad schematic netlist vs IPC by pad sets (`--sheet N`, `--allow-missing` while drawing) | python3, kicad-cli |
 | `make_skeleton` | one-shot: KiCad project, sym-lib-table, root sheet with one sub-sheet per PDF page | python3, AppImage |
+| `footprints` | library for the board's `tools/gen_footprints.py`: `run(RULES, PROJECT)` assigns a footprint to every IPC part (symbol + pad pattern rules), writes `lib/footprint_map.csv` and `lib/<PROJECT>.pretty` (project footprints derived from KiCad footprints or built from the IPC pads); `--check` | python3, AppImage mount |
+| `check_footprints` | every symbol's footprint vs the IPC pads: pads matched by number, rigid fit (residual < 0.05 mm), `reports/footprint_fit.csv` (placement for Phase 3) and `footprint_pads.csv`; `--pcbnew` re-measures after placing with pcbnew | python3 (`kipy -m p2k.check_footprints --pcbnew` for pcbnew) |
 | `render_sheet` | schematic sheet → PNG (kicad-cli SVG + librsvg/cairo) | python3, kicad-cli |
 | `board` | board root and config lookup | library |
 | `symgen` | helpers for the board's `tools/gen_symbols.py`: `from_std` (KiCad std symbol, pins renumbered), `box`, `header`, `power`, `run(build)` (write / `--check`) | library |
@@ -56,10 +58,13 @@ footprint rules and project footprints, `lib/`, `reference/`, `kicad/`, `reports
 | `sexpr`, `geom2d`, `gerber`, `fpgeom`, `sch_builder` | s-expressions, 2-D geometry, Gerber X2 reader, footprint fit, schematic writer | library |
 
 Still only in `ac_psu_kicad/tools`, moved here when the next board needs them (with
-ac_psu as the regression test): `gen_footprints`, `check_footprints`, `build_pcb`,
-`gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `check_board`, `drc`,
-`gerber_roundtrip`, `ipc356_diff`, `board_common`, `make_pcb.sh`. `erc.sh` and
-`check_all.sh` stay in each board repo.
+ac_psu as the regression test): `build_pcb`, `gerber_to_tracks`, `assign_nets`,
+`pours_to_zones`, `check_board`, `drc`, `gerber_roundtrip`, `ipc356_diff`, `board_common`,
+`make_pcb.sh`. `erc.sh` and `check_all.sh` stay in each board repo.
+
+`kipy -m p2k.TOOL` runs a tool under KiCad's python (the AppImage python ignores
+`PYTHONPATH`, so `kipy` inserts the package through `runpy`); `kipy SCRIPT.py` runs a board
+script, which puts `tools/p2k` on `sys.path` itself.
 
 ## `p2k_config.py`
 
@@ -82,5 +87,7 @@ Plain Python at the board repo root (no TOML: the system python3 may be < 3.11).
 | `COPPER` | check_sources, PCB tools | `[(gerber name, KiCad layer, User layer for pour outlines), ...]` top to bottom |
 | `DRILL_PLATED`, `DRILL_NONPLATED`, `OUTLINE` | check_sources | gerber names of the drill files (`DRILL_NONPLATED = None` when Proteus wrote none) and the outline |
 | `OUTLINE_RECT` | check_sources | `(x, y, width, height)` mm of the board outline |
+| `FOOTPRINT_PAD_SIZES` | footprints | optional, `"kicad"` (default: KiCad library pad sizes and drills, pad centres on the Proteus positions) or `"proteus"` (every footprint gets the Proteus pad sizes and drills; KiCad library footprints become derived `<name>_Proteus` project footprints) |
+| `OFF_BOARD_PARTS` | footprints | optional `{refdes: note}`: parts of `lib/part_map.csv` without IPC pads (not on the board); every other part without pads is an error |
 
 Coordinates are mm in the IPC / Gerber frame (Y up); KiCad (x, y) = (x, −y).

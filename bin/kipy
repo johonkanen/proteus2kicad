@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# The KiCad AppImage's python3.11 with the pcbnew bindings and the p2k package importable.
+# The KiCad AppImage's python3.11 with the pcbnew bindings and the p2k package importable:
+#   kipy -m p2k.TOOL [ARGS...]     run a p2k tool that needs pcbnew
+#   kipy SCRIPT.py [ARGS...]       run a board script (it puts tools/p2k on sys.path itself)
+#   kipy -c CODE
+# The AppImage python sets its own PYTHONPATH, so `-m` is run through runpy with the p2k
+# directory inserted into sys.path.
 P2K_HOME="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 source "$P2K_HOME/bin/kicad_env.sh" || exit 1
+if [ "${1:-}" = "-m" ] && [ $# -ge 2 ]; then
+    mod="$2"; shift 2
+    exec "$KICAD_MOUNT/bin/python3.11" -c "import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = sys.argv.pop(1); runpy.run_module(sys.argv[0], run_name='__main__', alter_sys=True)" "$P2K_HOME" "$mod" "$@"
+fi
 PYTHONPATH="$P2K_HOME:$KICAD_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" exec "$KICAD_MOUNT/bin/python3.11" "$@"

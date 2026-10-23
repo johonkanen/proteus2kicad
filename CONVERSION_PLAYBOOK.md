@@ -128,6 +128,11 @@ errors (warnings explained in STATUS.md).
    centres; fail on residual > 0.05 mm. `--pcbnew` places each footprint on a pcbnew board
    with the placement recipe and re-measures. Writes `reports/footprint_fit.csv` (side,
    angle, KiCad position/orientation per part) – the placement input for Phase 3.
+   Both are shared now (`p2k.footprints`, `p2k.check_footprints`); the board keeps RULES and
+   PROJECT in `tools/gen_footprints.py`. Pin-order check: fit the *unmoved* KiCad base
+   footprint with the Proteus renumbering onto the IPC pads – a small residual (< 0.1 mm)
+   confirms the Proteus ids sit on the JEDEC pads the renumbering says, a residual of a pad
+   pitch or more means the ids are on other pads (chirality; e.g. SOT-23 1 = JEDEC 3).
 3. Default: keep KiCad pad sizes; switch to Proteus sizes only where DRC later forces it
    (user decision). Sheet scripts fill the Footprint field from the map.
 
@@ -192,7 +197,7 @@ scripts; the shared code has no board names in it.
 |---|---|
 | `sexpr`, `geom2d`, `gerber`, `fpgeom`, `sch_builder`, `render_sheet`, `ipc356`, `check_sources`, `bin/kipy`, `bin/kicad-cli`, `bin/p2k` | `p2k_config.py`, `tools/check_all.sh`, `tools/erc.sh` |
 | `check_symbols`, `compare_netlists`, `make_skeleton`, `symgen` (symbol generator helpers), `sheetkit` (sheet-script helpers), `pdsprj` (values, layout records, pinouts from the .pdsprj), `pdftext` (PDF words, refdes pages) | `tools/gen_symbols.py` (the symbol list), `lib/part_map.csv` and its generator, `tools/sheets/sheetNN.py` (written fresh) and board-specific sheet helpers |
-| to move (still in `ac_psu_kicad/tools`): `check_footprints`, the generator part of `gen_footprints` | footprint `RULES` and project footprints |
+| `footprints` (generator: rules matcher, derive / build footprints, map), `check_footprints` | `tools/gen_footprints.py` = footprint `RULES` and `PROJECT` specs, `FOOTPRINT_PAD_SIZES` / `OFF_BOARD_PARTS` config keys |
 | to move: `gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `board_common`, `build_pcb`, `check_board`, `drc`, `gerber_roundtrip`, `ipc356_diff`, `make_pcb.sh` | design rules, mounting-hole footprint, `ACCEPTED` DRC types, project exceptions (no-net pins such as ac_psu R87-4/5) → config keys |
 
 Moving a tool: put it under `p2k/`, replace hard-coded board values by `p2k_config.py` keys
