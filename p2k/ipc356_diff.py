@@ -10,7 +10,8 @@ record filter) to a KiCad record:
   pads       same truncated refdes and pin id, nearest position within TOL (two pads with one
              number, or two parts sharing a truncated refdes, are told apart by position);
   vias       nearest KiCad via within TOL; Proteus via records stacked on one spot share one
-             KiCad via (counted, must equal STACKED_VIAS);
+             KiCad via (counted, must equal STACKED_VIAS); records at a REMOVED_VIAS position
+             (recorded deviation) must have no KiCad via;
   holes      nearest KiCad hole record (unplated 367 record, or an N/C pad of a board-only
              footprint H<n>) within TOL;
   free pads  nearest KiCad pad of a board-only footprint FREE_PAD_PREFIX<n> within TOL.
@@ -22,7 +23,7 @@ the #00xxx and sheet-local nets); a Proteus N/C pad (or one without a net) must 
 unconnected-(...) net or N/C; holes have no net; free pads and vias are on the mapped net.
 Unmatched records on either side are errors. Pad sizes are only summarised.
 
-Config keys: PROJECT, COPPER (layer count), DRILL_SMALLER, STACKED_VIAS, FREE_PAD_PREFIX.
+Config keys: PROJECT, COPPER (layer count), DRILL_SMALLER, STACKED_VIAS, REMOVED_VIAS, FREE_PAD_PREFIX.
 Board wrapper hooks: main(argv, added={refdes: {"pins": {pin: net}}}, extra_vias=[(x, y,
 net), ...]) for parts and vias of a later design revision that have no Proteus record; the
 IPC records go through p2k.pcb.configure(records=...).
@@ -144,6 +145,7 @@ def main(argv=None, added=None, extra_vias=None):
     used = set()
     pairs = []
     stacked = []
+    removed = []
     worst = 0.0
 
     def dist(p, r):
@@ -154,6 +156,12 @@ def main(argv=None, added=None, extra_vias=None):
         allc = by_key.get(key, [])
         cands = [r for r in allc if id(r) not in used]
         what = f"{p['refdes']}-{p['pin']}" if p["kind"] == "pad" else f"at ({p['x_mm']}, {p['y_mm']})"
+        if p["kind"] == "via" and bc.removed_via(p["x_mm"], p["y_mm"]):
+            # recorded deviation (REMOVED_VIAS): the board has no via here
+            if any(dist(p, r) < TOL for r in allc):
+                errors.append(f"Proteus via {what} is listed in REMOVED_VIAS but KiCad has a via there")
+            removed.append(p)
+            continue
         if not cands:
             if p["kind"] == "via" and allc:
                 r = min(allc, key=lambda r: dist(p, r))
@@ -175,6 +183,9 @@ def main(argv=None, added=None, extra_vias=None):
         used.add(id(r))
         worst = max(worst, d)
         pairs.append((p, r))
+    n_rm = len(getattr(cfg, "REMOVED_VIAS", {}) or {})
+    if len(removed) != n_rm:
+        errors.append(f"{len(removed)} Proteus via records at REMOVED_VIAS positions, {n_rm} listed")
     if len(stacked) != stacked_expected:
         errors.append(f"{len(stacked)} stacked duplicate Proteus via records share a KiCad via, STACKED_VIAS = {stacked_expected}")
     addrecs = []
@@ -253,6 +264,9 @@ def main(argv=None, added=None, extra_vias=None):
 
     extra = f", {stats['free_pad']} free pads" if stats["free_pad"] else ""
     st = f" ({len(stacked)} stacked duplicate via records on matched vias)" if stacked else ""
+    if removed:
+        print(f"ipc356_diff: {len(removed)} Proteus via records removed as recorded (REMOVED_VIAS): "
+              + ", ".join(f"({p['x_mm']}, {p['y_mm']}) {p['net']}" for p in removed))
     print(f"ipc356_diff: Proteus {len(prot)} records, KiCad {len(kic)}; matched {len(pairs) + len(stacked)} "
           f"({stats['pad']} pads incl. {stats['N/C pads']} N/C, {stats['via']} vias{st}, {stats['hole']} holes{extra}), "
           f"worst position offset {worst:.3f} mm (limit {TOL})")

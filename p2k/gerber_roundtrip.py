@@ -40,7 +40,10 @@ or flash is not covered, or a drill does not match.
 Config keys: PROJECT, CADCAM, COPPER, OUTLINE, DRILL_PLATED, DRILL_NONPLATED, VIA_DRILLS,
 PCB_RULES (clearance, min_track = zone minimum width); optional ROUNDTRIP = dict(res, tol,
 min_area, overlay_res, drill_tol), DRILL_SMALLER = {(proteus_mm, kicad_mm): reason},
-STACKED_VIAS (expected stacked duplicate via records, default 0), DRILL_EXCELLON (path).
+STACKED_VIAS (expected stacked duplicate via records, default 0), DRILL_EXCELLON (path);
+the recorded copper deviations NONCONDUCTOR_LAYERS, REMOVED_TRACKS, REMOVED_VIAS (p2k.pcb): those
+Proteus objects (NonConductor draws moved off copper, removed tracks, removed via pads and via
+drills) are dropped from the Proteus side before the comparison and counted in the report.
 Board wrapper hooks: main(argv, in_area=fn(layer, x, y) -> bool, extra_vias=[(x, y, net,
 note), ...]) for intentional deviations of a later design revision.
 
@@ -320,6 +323,28 @@ def pad_label(p):
     return f"{ref}{pin} ({p['net'] or p['net_raw'] or 'no net'})"
 
 
+def apply_recorded(klayer, g):
+    """Drop from a Proteus copper gerber what the board deliberately does not build (recorded
+    deviations, p2k.pcb): NonConductor draws moved off this copper layer (NONCONDUCTOR_LAYERS),
+    REMOVED_TRACKS draws and REMOVED_VIAS via pads. Returns Counter of what was dropped."""
+    target = bc.nonconductor_layer(klayer)
+    keep, n = [], Counter()
+    for o in g.objects:
+        if isinstance(o, gerber.Draw):
+            if o.ap.function == "NonConductor" and target != klayer:
+                n[f"NonConductor draws (moved to {target}, NONCONDUCTOR_LAYERS)"] += 1
+                continue
+            if o.ap.function == "Conductor" and bc.removed_track(klayer, o.x1, o.y1, o.x2, o.y2):
+                n["Conductor draws (REMOVED_TRACKS)"] += 1
+                continue
+        elif isinstance(o, gerber.Flash) and o.ap.function == "ViaPad" and bc.removed_via(o.x, o.y):
+            n["via pads (REMOVED_VIAS)"] += 1
+            continue
+        keep.append(o)
+    g.objects = keep
+    return n
+
+
 def compare_layer(layer, gp, gk, bbox, ipc_pads, ipc_vias, report, footprints, in_area):
     """Rasterise, XOR, cluster and classify one layer. Returns (summary dict, overlay arrays)."""
     tol, min_area = S.tol, S.min_area
@@ -571,7 +596,10 @@ def compare_excellon(gerber_drills, report):
 
 def compare_drills(kdir, report, extra_vias):
     errors = []
-    P_pl = flashes(bc.gerber_path(S.drill_plated))
+    P_raw = flashes(bc.gerber_path(S.drill_plated))
+    P_pl = [d for d in P_raw if not (d[3] == "ViaDrill" and bc.removed_via(d[0], d[1]))]
+    if len(P_pl) != len(P_raw):
+        report.append(f"== plated drills: {len(P_raw) - len(P_pl)} Proteus via drills not compared (REMOVED_VIAS)")
     K_pl = flashes(os.path.join(kdir, f"{S.project}-PTH-drl.gbr"))
     e, stacked, smaller = match_drills(P_pl, K_pl, "plated", report, extra_vias)
     errors += e
@@ -585,7 +613,7 @@ def compare_drills(kdir, report, extra_vias):
     if stacked != S.stacked_vias:
         errors.append(f"{stacked} stacked duplicate Proteus drill records, STACKED_VIAS = {S.stacked_vias}")
     if S.excellon:
-        errors += compare_excellon(P_pl + P_np, report)
+        errors += compare_excellon(P_raw + P_np, report)
     for e in errors:
         report.append("   ERROR " + e)
     return errors, stacked, smaller
@@ -623,8 +651,14 @@ def main(argv=None, in_area=None, extra_vias=None):
                   f"positions in the IPC frame (mm, Y up)",
                   f"board outline {bbox[0]} .. {bbox[2]} x {bbox[1]} .. {bbox[3]} mm", ""]
         summaries = []
+        recorded = {}
         for pname, klayer in S.layers:
             gp = gerber.parse(bc.gerber_path(pname))
+            dropped = apply_recorded(klayer, gp)
+            if dropped:
+                report.append(f"== {klayer}: Proteus objects not compared (recorded deviations): "
+                              + ", ".join(f"{v} {k}" for k, v in sorted(dropped.items())))
+                recorded[klayer] = dropped
             gk = gerber.parse(kicad_layer_file(kdir, klayer))
             summ, arrays = compare_layer(klayer, gp, gk, bbox, ipc_pads[klayer], ipc_vias, report, footprints, in_area)
             overlay(klayer, arrays)
@@ -654,6 +688,12 @@ def main(argv=None, in_area=None, extra_vias=None):
     if smaller:
         extra += "; KiCad drill smaller, accepted (DRILL_SMALLER): " + ", ".join(
             f"{n}x {a}->{b}" for (a, b), n in sorted(smaller.items()))
+    if recorded:
+        tot = Counter()
+        for c in recorded.values():
+            tot.update(c)
+        print("roundtrip: Proteus objects not compared (recorded deviations, all layers): "
+              + ", ".join(f"{v} {k}" for k, v in sorted(tot.items())))
     print(f"roundtrip: drills {len(drill_errors)} mismatches{extra}; report {rel_out}/roundtrip.txt, overlays {rel_out}/*.png")
     for e in drill_errors[:10]:
         print("roundtrip: ERROR " + e)

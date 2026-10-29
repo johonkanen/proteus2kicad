@@ -10,7 +10,8 @@ Holes: every IPC 'hole' record has exactly one board-only pad at its position wi
 Free pads: every IPC 'free_pad' record has exactly one board-only pad there with the IPC
        drill and pad size, plated, on the IPC net (mapped to KiCad through the pads).
 Vias:  every IPC via has a board via at its position (0.01 mm) with the IPC drill and pad
-       size on the IPC net, and every board via is an IPC via.
+       size on the IPC net (except the REMOVED_VIAS of the config: no board via there), and
+       every board via is an IPC via.
 Copper: every track and via has a net, every zone has a net (after the full make_pcb run).
 
 A board wrapper may call main(added=..., extra_vias=...): `added` = {refdes: {"pins": {pin:
@@ -126,6 +127,7 @@ def check_copper(board, recs, mapping, errors, extra_vias):
         c = v.GetPosition()
         grid.setdefault((round(mm(c.x), 1), round(-mm(c.y), 1)), []).append(v)
     matched = set()
+    nremoved = 0
     for q in ipc_vias:
         hit = None
         for dx in (-0.1, 0, 0.1):
@@ -134,6 +136,11 @@ def check_copper(board, recs, mapping, errors, extra_vias):
                     c = v.GetPosition()
                     if math.hypot(mm(c.x) - q["x_mm"], -mm(c.y) - q["y_mm"]) < 0.01:
                         hit = v
+        if bc.removed_via(q["x_mm"], q["y_mm"]):   # recorded deviation: no via wanted here
+            nremoved += 1
+            if hit is not None:
+                errors.append(f"IPC via ({q['x_mm']}, {q['y_mm']}) is listed in REMOVED_VIAS but the board has a via")
+            continue
         if hit is None:
             errors.append(f"IPC via ({q['x_mm']}, {q['y_mm']}) {q['net']}: no board via")
             continue
@@ -162,6 +169,10 @@ def check_copper(board, recs, mapping, errors, extra_vias):
         errors.append(f"{len(extra_vias)} added vias listed, {nextra} found on the board")
     if extra_vias:
         print(f"check_board: {nextra} added vias at their positions and nets")
+    if nremoved or getattr(bc.cfg(), "REMOVED_VIAS", None):
+        print(f"check_board: {nremoved} IPC via records without board via as recorded (REMOVED_VIAS)")
+        if nremoved != len(bc.cfg().REMOVED_VIAS):
+            errors.append(f"REMOVED_VIAS lists {len(bc.cfg().REMOVED_VIAS)} vias, {nremoved} IPC via records found there")
     nonet = [t for t in tracks if t.GetNetCode() <= 0]
     if nonet:
         errors.append(f"{len(nonet)} tracks without net")

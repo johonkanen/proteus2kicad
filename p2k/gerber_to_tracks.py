@@ -16,7 +16,10 @@ p2k.gerber and, on the board made by p2k.build_pcb:
     flash must land on a footprint pad on that layer (and OtherPad flashes on a board-only
     footprint: mounting hole or free pad); the plated and unplated drill flashes must match a
     pad hole or via;
-  - NonConductor draws -> graphic lines on the copper layer, no net;
+  - NonConductor draws -> graphic lines on the copper layer, no net (or on the layer that
+    NONCONDUCTOR_LAYERS names for that copper layer, e.g. silk; identical moved lines once);
+  - recorded deviations (config, see p2k.pcb): REMOVED_TRACKS Conductor draws and REMOVED_VIAS
+    (ViaPad flashes + ViaDrill) are not built; every listed entry must be found;
   - the outer contour of each positive G36 region -> polygon on the layer's reference User
     layer (User.1..4 = Proteus.F/In1/In2/B.Pours).
 Tracks and vias get no net here; tools/assign_nets.py assigns them.
@@ -63,6 +66,7 @@ class CopperLayer:
         self.other_pads = []    # gerber.Flash (OtherPad = mounting holes)
         self.pours = []         # Pour
         self.stats = Counter()
+        self.removed = []       # REMOVED_TRACKS keys found on this layer
 
 
 def flash_shape(f):
@@ -102,10 +106,18 @@ def load_layer(gname, layer, user):
                 stroke_w.setdefault(i, Counter())[d.ap.params[0]] += 1
             cl.stats["pour edge strokes"] += 1
             continue
+        rm = bc.removed_track(layer, d.x1, d.y1, d.x2, d.y2)
+        if rm:
+            cl.removed.append(rm[0])
+            cl.stats["removed tracks (REMOVED_TRACKS)"] += 1
+            continue
         cl.tracks.append((d.x1, d.y1, d.x2, d.y2, d.ap.params[0]))
     for f in g.of(gerber.Flash):
         fn = f.ap.function
         if fn == "ViaPad":
+            if bc.removed_via(f.x, f.y):
+                cl.stats["removed via pads (REMOVED_VIAS)"] += 1
+                continue
             cl.vias.append((f.x, f.y, f.ap.params[0]))
         elif fn.startswith("OtherPad"):
             cl.other_pads.append(f)
@@ -148,7 +160,8 @@ def load_drills():
     for name in (c.DRILL_PLATED, getattr(c, "DRILL_NONPLATED", None)):
         if name:
             g = gerber.parse(bc.gerber_path(name))
-            out += [(f.x, f.y, f.ap.params[0], f.ap.function) for f in g.of(gerber.Flash)]
+            out += [(f.x, f.y, f.ap.params[0], f.ap.function) for f in g.of(gerber.Flash)
+                    if not (f.ap.function == "ViaDrill" and bc.removed_via(f.x, f.y))]
     return out
 
 
@@ -198,6 +211,7 @@ def main():
         board.Delete(z)
     own_layers = {getattr(pcbnew, u.replace(".", "_")) for _, _, u in bc.copper()}
     own_layers |= {board.GetLayerID(c) for _, c, _ in bc.copper()}
+    own_layers |= {board.GetLayerID(bc.nonconductor_layer(c)) for _, c, _ in bc.copper()}
     for d in list(board.GetDrawings()):
         if d.GetLayer() in own_layers:
             board.Delete(d)
@@ -206,10 +220,23 @@ def main():
     layers = load_copper()
     drills = load_drills()
     ipc_vias = [p for p in bc.ipc_records() if p["kind"] == "via"]
+    removed_vias = [p for p in ipc_vias if bc.removed_via(p["x_mm"], p["y_mm"])]
+    ipc_vias = [p for p in ipc_vias if p not in removed_vias]
+    want = set(getattr(bc.cfg(), "REMOVED_VIAS", {}) or {})
+    found = {bc.removed_via(p["x_mm"], p["y_mm"])[0] for p in removed_vias}
+    if want - found:
+        errors.append(f"REMOVED_VIAS entries without an IPC via record: {sorted(want - found)}")
+    want = set(getattr(bc.cfg(), "REMOVED_TRACKS", {}) or {})
+    found = [k for cl in layers for k in cl.removed]
+    if want - set(found) or len(found) != len(set(found)):
+        errors.append(f"REMOVED_TRACKS: {len(want)} listed, found {len(found)} draws "
+                      f"(missing {sorted(want - set(found))})")
 
     # tracks
+    moved = set()
     for cl in layers:
         lid = board.GetLayerID(cl.layer)
+        glid = board.GetLayerID(bc.nonconductor_layer(cl.layer))
         for x1, y1, x2, y2, w in cl.tracks:
             t = pcbnew.PCB_TRACK(board)
             t.SetStart(pt(x1, y1))
@@ -218,12 +245,17 @@ def main():
             t.SetLayer(lid)
             board.Add(t)
         for x1, y1, x2, y2, w in cl.graphics:
+            if glid != lid:   # moved off copper: identical lines of several layers only once
+                k = (glid,) + tuple(sorted((_k(x1, y1), _k(x2, y2)))) + (round(w, 4),)
+                if k in moved:
+                    continue
+                moved.add(k)
             s = pcbnew.PCB_SHAPE(board)
             s.SetShape(pcbnew.SHAPE_T_SEGMENT)
             s.SetStart(pt(x1, y1))
             s.SetEnd(pt(x2, y2))
             s.SetWidth(pcbnew.FromMM(w))
-            s.SetLayer(lid)
+            s.SetLayer(glid)
             board.Add(s)
     # vias
     sites = via_sites(layers, drills, errors)
@@ -306,8 +338,13 @@ def main():
     for cl in layers:
         st = ", ".join(f"{v} {k}" for k, v in sorted(cl.stats.items()))
         print(f"gerber_to_tracks: {cl.layer:6s} {st}, {len(cl.pads)} pad flashes")
+    rm = ""
+    if found or removed_vias:
+        rm = f"; removed as recorded: {len(found)} tracks (REMOVED_TRACKS), {len(removed_vias)} vias (REMOVED_VIAS)"
+    if moved:
+        rm += f"; {len(moved)} NonConductor lines moved off copper (NONCONDUCTOR_LAYERS)"
     print(f"gerber_to_tracks: {sum(len(cl.tracks) for cl in layers)} tracks, {len(sites)} vias "
-          f"(IPC {len(ipc_vias)}{dup_note}), {sum(len(cl.pours) for cl in layers)} pour outlines on User.1-4")
+          f"(IPC {len(ipc_vias)}{dup_note}), {sum(len(cl.pours) for cl in layers)} pour outlines on User.1-4{rm}")
     for e in errors:
         print("gerber_to_tracks: ERROR " + e)
     if errors:

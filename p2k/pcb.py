@@ -13,7 +13,9 @@ A board wrapper may call configure(board=..., schematic=..., reports=..., record
 running a tool; `records` filters the IPC records (e.g. intended deviations of a later design
 revision) and is used by every tool that reads them.
 
-Config keys used here: PROJECT, CADCAM, COPPER, DRILL_PLATED, DRILL_NONPLATED, OUTLINE.
+Config keys used here: PROJECT, CADCAM, COPPER, DRILL_PLATED, DRILL_NONPLATED, OUTLINE; the
+recorded copper deviations NONCONDUCTOR_LAYERS, REMOVED_TRACKS, REMOVED_VIAS (optional; used by
+gerber_to_tracks and accepted by check_board, ipc356_diff, gerber_roundtrip).
 """
 import glob
 import json
@@ -128,6 +130,39 @@ def drill_smaller_accepted(d_proteus, d_kicad, tol=0.005):
     for (a, b), why in (getattr(cfg(), "DRILL_SMALLER", {}) or {}).items():
         if abs(a - d_proteus) <= tol and abs(b - d_kicad) <= tol:
             return why
+    return None
+
+
+# ---------------------------------------------------------------- recorded copper deviations
+
+def nonconductor_layer(klayer):
+    """Target layer of the NonConductor draws of a copper layer: NONCONDUCTOR_LAYERS
+    ({copper layer: layer}, e.g. {"F.Cu": "F.SilkS"}) or the copper layer itself (default: copper
+    graphics without net, exactly as Proteus drew them)."""
+    return (getattr(cfg(), "NONCONDUCTOR_LAYERS", {}) or {}).get(klayer, klayer)
+
+
+def removed_track(klayer, x1, y1, x2, y2, tol=0.001):
+    """(key, reason) when the Conductor draw is listed in REMOVED_TRACKS ({(layer, x1, y1, x2, y2):
+    reason}, IPC frame, either direction) - Proteus copper deliberately not built (e.g. dangling
+    stubs); None otherwise."""
+    for key, why in (getattr(cfg(), "REMOVED_TRACKS", {}) or {}).items():
+        lay, a1, b1, a2, b2 = key
+        if lay != klayer:
+            continue
+        for p, q in (((a1, b1), (a2, b2)), ((a2, b2), (a1, b1))):
+            if abs(p[0] - x1) <= tol and abs(p[1] - y1) <= tol and abs(q[0] - x2) <= tol and abs(q[1] - y2) <= tol:
+                return key, why
+    return None
+
+
+def removed_via(x, y, tol=0.01):
+    """(key, reason) when a via at (x, y) (IPC frame) is listed in REMOVED_VIAS ({(x, y): reason}) -
+    a Proteus via deliberately not built (its ViaPad flashes and drill are dropped, its IPC records
+    are expected without a board via); None otherwise."""
+    for key, why in (getattr(cfg(), "REMOVED_VIAS", {}) or {}).items():
+        if abs(key[0] - x) <= tol and abs(key[1] - y) <= tol:
+            return key, why
     return None
 
 
