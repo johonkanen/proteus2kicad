@@ -32,7 +32,11 @@ PROJECT = {name: spec}; spec keys
   ipc        refdes whose IPC pads give the pad centres (moved into the base frame); pads of
              the base without a number (paste segments) follow the nearest numbered pad
   ipc_sizes  also take pad size (and drill) from the IPC pads of that refdes
-  body       (w, h) body outline for footprints built from the IPC pads only
+  body       (w, h) body outline for footprints built from the IPC pads only (centred on the pads)
+  body_poly  [(x, y), ...] body outline polygon in board coordinates (IPC frame, mm) of the `ipc`
+             refdes, e.g. measured from the Proteus silk screen (IPC-built footprints only): Fab =
+             the polygon, silk = the polygon with gaps of SILK_PAD_GAP around the pads, courtyard =
+             convex hull of body and pads + 0.25 mm
   rotate     degrees: build the IPC-only footprint in a frame rotated by this angle (a part
              placed at 45 deg on the board gets an axis-aligned footprint)
   descr      description text
@@ -283,6 +287,76 @@ def _rect(x0, y0, x1, y1, layer, width):
             [Sym("layer"), "F." + layer]]
 
 
+SILK_PAD_GAP = 0.2   # mm, silk kept off the pads (circumscribed pad circle + this)
+
+
+def _poly(pts, layer, width):
+    """Closed polygon outline; pts in the footprint frame, Y up."""
+    return [Sym("fp_poly"), [Sym("pts"), *[[Sym("xy"), _r4(x), _r4(-y)] for x, y in pts]],
+            [Sym("stroke"), [Sym("width"), width], [Sym("type"), Sym("solid")]], [Sym("fill"), Sym("no")],
+            [Sym("layer"), "F." + layer]]
+
+
+def _line(a, b, layer, width):
+    return [Sym("fp_line"), [Sym("start"), _r4(a[0]), _r4(-a[1])], [Sym("end"), _r4(b[0]), _r4(-b[1])],
+            [Sym("stroke"), [Sym("width"), width], [Sym("type"), Sym("solid")]], [Sym("layer"), "F." + layer]]
+
+
+def _hull(points):
+    """Convex hull (counter-clockwise, Y up) of a point list (monotone chain)."""
+    pts = sorted(set((round(x, 6), round(y, 6)) for x, y in points))
+    if len(pts) < 3:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lo, hi = [], []
+    for p in pts:
+        while len(lo) >= 2 and cross(lo[-2], lo[-1], p) <= 1e-9:
+            lo.pop()
+        lo.append(p)
+    for p in reversed(pts):
+        while len(hi) >= 2 and cross(hi[-2], hi[-1], p) <= 1e-9:
+            hi.pop()
+        hi.append(p)
+    return lo[:-1] + hi[:-1]
+
+
+def _grown_hull(points, d):
+    """Convex hull of the points grown by at least d (each point replaced by an octagon around
+    a circle of radius d; corners come out bevelled)."""
+    r = d / math.cos(math.pi / 8)
+    grown = [(x + r * math.cos(k * math.pi / 4 + math.pi / 8), y + r * math.sin(k * math.pi / 4 + math.pi / 8))
+             for x, y in points for k in range(8)]
+    return _hull(grown)
+
+
+def _clip(a, b, keepout, min_len=0.1):
+    """Parts of segment a-b outside every circle (cx, cy, r) of keepout."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    cut = []
+    for cx, cy, r in keepout:
+        fx, fy = a[0] - cx, a[1] - cy
+        bq = 2 * (fx * dx + fy * dy)
+        cq = fx * fx + fy * fy - r * r
+        disc = bq * bq - 4 * L2 * cq
+        if L2 == 0 or disc <= 0:
+            continue
+        t0, t1 = (-bq - math.sqrt(disc)) / (2 * L2), (-bq + math.sqrt(disc)) / (2 * L2)
+        if t1 > 0 and t0 < 1:
+            cut.append((max(t0, 0.0), min(t1, 1.0)))
+    keep, t = [], 0.0
+    for c0, c1 in sorted(cut):
+        if c0 > t:
+            keep.append((t, c0))
+        t = max(t, c1)
+    if t < 1:
+        keep.append((t, 1.0))
+    L = math.sqrt(L2)
+    return [((a[0] + dx * u, a[1] + dy * u), (a[0] + dx * v, a[1] + dy * v)) for u, v in keep if (v - u) * L >= min_len]
+
+
 def _circle(r, layer, width):
     return [Sym("fp_circle"), [Sym("center"), 0, 0], [Sym("end"), _r4(r), 0],
             [Sym("stroke"), [Sym("width"), width], [Sym("type"), Sym("solid")]], [Sym("fill"), Sym("no")],
@@ -310,7 +384,12 @@ def from_ipc(name, spec, ipc):
     bx1, by1 = max(e[2] for e in ext), max(e[3] for e in ext)
     # body = spec["body"] or the pad extents; courtyard 0.25 mm around body and pads (KLC),
     # a circle for single round pins (PIN terminals) so neighbours are not blocked diagonally
-    if spec.get("body"):
+    body = None
+    if spec.get("body_poly"):
+        body = [(m * (ca * x - sa * y) - cx, sa * x + ca * y - cy) for x, y in spec["body_poly"]]
+        fx0, fy0 = min(x for x, _ in body), min(y for _, y in body)
+        fx1, fy1 = max(x for x, _ in body), max(y for _, y in body)
+    elif spec.get("body"):
         w, h = spec["body"]
         fx0, fy0, fx1, fy1 = -w / 2, -h / 2, w / 2, h / 2
     else:
@@ -318,16 +397,36 @@ def from_ipc(name, spec, ipc):
     cx0, cy0 = min(fx0, bx0) - 0.25, min(fy0, by0) - 0.25
     cx1, cy1 = max(fx1, bx1) + 0.25, max(fy1, by1) + 0.25
     sx0, sy0, sx1, sy1 = fx0 - 0.12, fy0 - 0.12, fx1 + 0.12, fy1 + 0.12
-    round_pin = len(pads) == 1 and abs(pads[0]["pad_w"] - pads[0]["pad_h"]) < 1e-6 and not spec.get("body")
+    round_pin = len(pads) == 1 and abs(pads[0]["pad_w"] - pads[0]["pad_h"]) < 1e-6 and not (spec.get("body") or body)
+    if body:
+        keepout = [(x - cx, y - cy, math.hypot(p["pad_w"], p["pad_h"]) / 2 if not tht or p["pad_w"] != p["pad_h"]
+                    else p["pad_w"] / 2) for p, x, y in zip(pads, xs, ys)]
+        keepout = [(x, y, r + SILK_PAD_GAP) for x, y, r in keepout]
+        silk = [_line(a, b, "SilkS", 0.12) for i in range(len(body))
+                for a, b in _clip(body[i], body[(i + 1) % len(body)], keepout)]
+        corners = list(body)
+        for p, x, y in zip(pads, xs, ys):   # pad outline points (round pads: 16-gon around the circle)
+            if tht and abs(p["pad_w"] - p["pad_h"]) < 1e-6:
+                r = p["pad_w"] / 2 / math.cos(math.pi / 16)
+                corners += [(x - cx + r * math.cos(k * math.pi / 8), y - cy + r * math.sin(k * math.pi / 8)) for k in range(16)]
+            else:
+                a = math.radians(p["rot"] - rot0)
+                for u, v in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                    du, dv = u * p["pad_w"] / 2, v * p["pad_h"] / 2
+                    corners.append((x - cx + du * math.cos(a) - dv * math.sin(a), y - cy + du * math.sin(a) + dv * math.cos(a)))
+        graphics = [_poly(body, "Fab", 0.1), *silk, _poly(_grown_hull(corners, 0.25), "CrtYd", 0.05)]
+    elif round_pin:
+        graphics = [_circle(fx1, "Fab", 0.1), _circle(sx1, "SilkS", 0.12), _circle(cx1, "CrtYd", 0.05)]
+    else:
+        graphics = [_rect(fx0, -fy1, fx1, -fy0, "Fab", 0.1), _rect(sx0, -sy1, sx1, -sy0, "SilkS", 0.12),
+                    _rect(cx0, -cy1, cx1, -cy0, "CrtYd", 0.05)]
     # file coordinates are Y down
     node = [Sym("footprint"), name, [Sym("version"), FILE_VERSION], [Sym("generator"), f"{project()}_gen_footprints"],
             [Sym("layer"), "F.Cu"], [Sym("descr"), f"{spec['descr']} ({project()}, pads from IPC-D-356A {spec['ipc']})"],
             [Sym("property"), "Reference", "REF**", [Sym("at"), 0, _r4(-sy1 - 1.2), 0], [Sym("layer"), "F.SilkS"], _eff()],
             [Sym("property"), "Value", name, [Sym("at"), 0, _r4(-sy0 + 1.2), 0], [Sym("layer"), "F.Fab"], _eff()],
             [Sym("attr"), Sym("through_hole" if tht else "smd")],
-            *([_circle(fx1, "Fab", 0.1), _circle(sx1, "SilkS", 0.12), _circle(cx1, "CrtYd", 0.05)] if round_pin else
-              [_rect(fx0, -fy1, fx1, -fy0, "Fab", 0.1), _rect(sx0, -sy1, sx1, -sy0, "SilkS", 0.12),
-               _rect(cx0, -cy1, cx1, -cy0, "CrtYd", 0.05)]),
+            *graphics,
             [Sym("fp_text"), Sym("user"), "${REFERENCE}", [Sym("at"), 0, 0, 0], [Sym("layer"), "F.Fab"], _eff()]]
     for p, x, y in zip(pads, xs, ys):
         px, py = _r4(x - cx), _r4(-(y - cy))
