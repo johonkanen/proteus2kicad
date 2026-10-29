@@ -15,7 +15,10 @@ pad size, drill). RULES = [(symbol, conditions, footprint, note), ...]; the firs
 wins and every refdes must match one. Conditions: n = pad count, tht = True/False,
 span (mm, +-0.02), pad = (w, h) of the IPC pads (all pads this size, order-free), drill,
 package / device = that column of lib/part_map.csv (when two Proteus packages have the same
-pad pattern, e.g. film capacitors of different widths).
+pad pattern, e.g. film capacitors of different widths), refdes = a tuple/set of refdes (a rule
+for named parts only, e.g. the Proteus pad sizes where the KiCad pads collide with Proteus
+copper; put it before the general rule; every refdes named in such a condition must be
+assigned by one of the rules naming it).
 
 Pad numbers always equal the IPC pin ids. Policy: use the KiCad library footprint unchanged
 when its pads land on the IPC pads (check_footprints: residual < 0.05 mm per pad); otherwise
@@ -107,6 +110,12 @@ def features(pads):
 
 def match(cond, f, part):
     for key, want in cond.items():
+        if key == "refdes":
+            if isinstance(want, str):
+                raise SystemExit(f"footprints: rule condition refdes must be a tuple/set of refdes, not {want!r}")
+            if part["refdes"] not in want:
+                return False
+            continue
         if key in ("package", "device"):
             if key not in part:
                 raise SystemExit(f"footprints: rule condition {key!r} needs that column in lib/part_map.csv")
@@ -134,18 +143,25 @@ def assign(rules, added=None):
     ipc = fpgeom.ipc_pads_by_refdes()
     off_board = getattr(board.config(), "OFF_BOARD_PARTS", {})
     out, errors = {}, []
+    used_rule = {}
     for ref in sorted(ipc):
         if ref not in pm:
             errors.append(f"{ref}: in the IPC file but not in lib/part_map.csv")
             continue
         sym = pm[ref]["lib_id"].split(":", 1)[1]
         f = features(ipc[ref])
-        hits = [(fp, note) for s, cond, fp, note in rules if s == sym and match(cond, f, pm[ref])]
+        hits = [rule for rule in rules if rule[0] == sym and match(rule[1], f, pm[ref])]
         if not hits:
             errors.append(f"{ref}: no footprint rule for {sym} (n={f['n']} tht={f['tht']} span={f['span']:.2f} "
                           f"pads={sorted(f['pads'])} drills={sorted(f['drills'])})")
             continue
-        out[ref] = hits[0]
+        out[ref] = (hits[0][2], hits[0][3])
+        used_rule.setdefault(id(hits[0]), set()).add(ref)
+    # every refdes named in a `refdes` condition must be assigned by one of those rules
+    named = set().union(*(set(r[1].get("refdes", ())) for r in rules))
+    taken = set().union(*(used_rule.get(id(r), set()) for r in rules if "refdes" in r[1]))
+    if named - taken:
+        errors.append("refdes listed in a rule condition but assigned by no such rule: " + " ".join(sorted(named - taken)))
     for ref, p in (added or {}).items():
         if ref not in pm:
             errors.append(f"{ref}: added part missing from lib/part_map.csv")
