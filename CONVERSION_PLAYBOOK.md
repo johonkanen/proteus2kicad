@@ -187,6 +187,22 @@ Proteus assembly gerbers), KiCad vs Proteus pad sizes/drills where DRC does not 
 choice. Ask which to do; implement in the generators; re-run `make_pcb.sh` and
 `check_all.sh`; update the accepted DRC counts.
 
+Generator tools for the usual decisions (tube_psu Phase 5):
+- Proteus pad sizes only on the parts that need them: a `refdes` rule condition in front of
+  the general rule (`footprints`); measure the conflicts per refdes first (DRC with KiCad
+  pads) and run the gerber round trip too – a larger KiCad pad can also make the zone fill
+  drop Proteus copper without any DRC error.
+- Bodies of IPC-built footprints from the Proteus silk: `body_poly` (board coordinates of the
+  spec's `ipc` part; a board script measures the closed silk outline around the pads and
+  checks the other parts on that footprint) – the courtyard follows the real body instead of
+  the pad box.
+- Proteus copper that should not be built (NonConductor lines on copper layers, dangling
+  stubs, a one-layer via): `NONCONDUCTOR_LAYERS`, `REMOVED_TRACKS`, `REMOVED_VIAS` – recorded
+  in the config with a reason, accepted by the checks.
+- References: `place_refdes` as the last `make_pcb` step (clear spot around the part, else a
+  smaller size, else Fab only). Footprint silk over neighbours on a dense Proteus placement
+  remains (KiCad library graphics).
+
 After the migration, decide when the board stops being generated (first manual layout
 change in KiCad) and record it in STATUS.md.
 
@@ -203,6 +219,7 @@ scripts; the shared code has no board names in it.
 | `footprints` (generator: rules matcher, derive / build footprints, map), `check_footprints` | `tools/gen_footprints.py` = footprint `RULES` and `PROJECT` specs, `FOOTPRINT_PAD_SIZES` / `OFF_BOARD_PARTS` config keys |
 | `pcb` (paths, netlist export, net map), `build_pcb`, `gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `check_board`, `drc` | `tools/make_pcb.sh`, `PCB_RULES` / `PCB_THICKNESS` / `HOLE_*` / `FREE_PAD_*` / `DRC_ACCEPTED` config keys, board-only footprint specs |
 | `gerber_roundtrip`, `ipc356_diff` (Phase 4) | `STACKED_VIAS`, `DRILL_SMALLER`, `DRILL_EXCELLON`, `ROUNDTRIP` config keys; deviation hooks (`in_area`, `added`, `extra_vias`) for later revisions |
+| `place_refdes` (Phase 5); recorded copper deviations in `pcb` / `gerber_to_tracks` / the checks | `REFDES_PLACEMENT`, `NONCONDUCTOR_LAYERS`, `REMOVED_TRACKS`, `REMOVED_VIAS` config keys |
 
 Moving a tool: put it under `p2k/`, replace hard-coded board values by `p2k_config.py` keys
 (document them in README.md), grep for refdes and net names of the old board
