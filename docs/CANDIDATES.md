@@ -2,7 +2,8 @@
 
 Status (2026-11-20): batch 0 (regression harness, baseline; c72d909), batch 1 (robustness fixes; 6cf43b1),
 batch 2 (Proteus project reader and part map; 0b7a294), batch 3 (symbols, netlist comparison, ERC;
-2686b4b), batch 4 (schematic drawing; 631e74b) and batch 5 (footprints; fa46323) done;
+2686b4b), batch 4 (schematic drawing; 631e74b), batch 5 (footprints; fa46323), batch 6 (pin order and
+pad checks; 306c26e) and batch 7a (PCB build chain fixes and holes; 6fc78ea) done;
 see "Status per entry" (section 5) and the regression record (section 6). Later sessions implement
 the rest batch by batch (section 3) and tick the entries off there. The prompt for the next
 session is at the end (section 7).
@@ -68,6 +69,13 @@ have no candidate list; tube_psu contributes code (`tools/measure_gaps.py`, `too
   `ac_psu_kicad` are separate projects: no regression runs, migrations or pin-bump notes for them
   in this plan. The D-Z behaviour change is documented with its opt-out key (`STRICT_CHECKS =
   set()`) in README.md (`STRICT_CHECKS` row).
+- **D-K2 (PF sheet re-baseline, user, 2026-11-20):** PF's batch-4 migration (`ph()` → `place(...,
+  text="above", text_gap=3.175)`) may re-baseline `kicad/01_*.kicad_sch` and `kicad/03_*.kicad_sch`
+  for the K2 field-angle change (10 lines: the Reference / Value angle of 5 rotated capacitors
+  0 → 270 / 90, so the texts are drawn horizontal instead of vertical over the plates). This is an
+  accepted, reviewed change: the migration session applies it in PF's migration commit (rendered
+  check of the two sheets, every other generated file identical) and records it in PF's STATUS.md.
+  No board commit in the p2k sessions.
 
 ## 1. Deduplicated candidates
 
@@ -691,11 +699,14 @@ generators (`make_part_map.py`, `gen_symbols.py`, `tools/sheets/sheet*.py`, `gen
 
 Implemented (registered in `board.STRICT_IDS`): `no_connect_pin_type`, `nc_joined` (compare_netlists part;
 the ipc356_diff part R4 comes with batch 8), `net_names` (batch 3, 2686b4b), `derive_max_move`, `pad_extent`
-(batch 5, fa46323).
+(batch 5, fa46323), `hole_refdes` (batch 7a, 6fc78ea).
 
 Keys whose presence is the opt-in (no strict id needed): `BOTTOM_THT`, `ERC_FATAL_WARNINGS`,
 `DRC_EXPECTED_WARNINGS`, `DRC_ACCEPTED_ITEMS`, `PENDING`, `EXCELLON_MISSING`, `SPLIT_PIN_MERGES`,
-`SMD_FREE_PADS`, `PROTEUS_PADS`, the pad-set form of `DRILL_SMALLER`.
+`SMD_FREE_PADS`, `PROTEUS_PADS`, the pad-set form of `DRILL_SMALLER`; since batch 6 `PIN_ORDER`,
+`PIN_ORDER_BOTTOM`, `PIN_ORDER_MAX_MOVE` (check_pin_order) and `PROTEUS_PADS_CHECK` (check_pads): new
+tools that run only when a board calls them, so no strict id; since 7a `IPC_PIN_IDS`, `HOLE_START` /
+`HOLE_PREFIX` and the `(reason, n)` form of `REMOVED_TRACKS`.
 
 ## 3. Implementation order
 
@@ -778,6 +789,11 @@ Keys whose presence is the opt-in (no strict id needed): `BOTTOM_THT`, `ERC_FATA
 - Migration: `tools/check_pin_order.py` of PA, PR, PF, HV, TC → a `PIN_ORDER` table plus
   `p2k check_pin_order`. Every board's negative tests from its STATUS.md are re-run against the
   shared tool before the board script is deleted. HV `check_proteus_pads.py` → `p2k check_pads`.
+- **Done (306c26e).** Proven per board in scratch clones (tables in section 5); each migration
+  commit: add the `PIN_ORDER` table (and `PIN_ORDER_BOTTOM` / `PIN_ORDER_MAX_MOVE`, HV
+  `PROTEUS_PADS_CHECK`) to `p2k_config.py`, change the `check_all.sh` step to
+  `tools/p2k/bin/kipy -m p2k.check_pin_order` (HV also `kipy -m p2k.check_pads`), delete the board
+  script; nothing generated changes.
 
 ### Batch 7: PCB build chain
 
@@ -789,6 +805,12 @@ Batch 7 is split into three commits, each regression-tested.
 - Migration: PR `rename_holes.py` removed (`HOLE_START = 101`, board file identical); TC
   `pcb_wrap.py` patch 5 and HV `remove_dot_tracks.py` removed (I7); PF `tools/ipc356.py` removed (I6, reference/ identical);
   HV J1 / TC J11 renumbered with `IPC_PIN_IDS` (board design commits).
+- **Done (6fc78ea)**, except B3's `gerber_roundtrip.PAD_FUNCTIONS` part, which moves to batch 8: TC's
+  `phase4_wrap.py` asserts `"BGAPad" not in rt.PAD_FUNCTIONS` ("p2k knows BGAPad now: remove this
+  wrapper"), so adding it here fails TC's `check_all.sh` before its migration (seen in the scratch
+  proof). Migrations proven in scratch clones: PR, PF, TC identical; **HV's I7 migration is not
+  byte-identical** (see I7 in section 5): it re-baselines `kicad/tube_hv_supplies.kicad_pcb`,
+  `reports/assign_nets.txt` and `reports/roundtrip/roundtrip.txt` (same copper; reviewed board commit).
 
 **7b** (TC features)
 - Files: `ipc356.py`, `check_sources.py`, `pcb.py`, `gerber_to_tracks.py`, `assign_nets.py`,
@@ -805,7 +827,8 @@ Batch 7 is split into three commits, each regression-tested.
 
 ### Batch 8: Phase 4
 
-- Files: `p2k/gerber_roundtrip.py` (R1, R2, R3, R5, R7, B3 / B4 / B5 parts, B9), `p2k/ipc356_diff.py`
+- Files: `p2k/gerber_roundtrip.py` (R1, R2, R3, R5, R7, B3 / B4 / B5 parts, B9; B3 = `"BGAPad"` in
+  `PAD_FUNCTIONS`, in the same commit as TC's `phase4_wrap.py` removal or with TC's assert accounted for), `p2k/ipc356_diff.py`
   (R3, R4, B1 pattern, B4 / B5 parts, B9, R10).
 - Migration:
   - PR `roundtrip.py` → `EXCELLON_MISSING`, with the report lines identical.
@@ -892,7 +915,7 @@ All three were answered on 2026-11-20 (section "Decisions": D-R, D-Z, D-AC). Kep
 | C4 strict `net_names` | 3 | **done** (2686b4b): a name hint becomes an error "net name: KiCad net … = IPC net …". Negative: PF netlist with HYPPY2 renamed → warning without, error with the id. PA, PR, PF, HV, TC (wrapper) pass with it; HV can drop its `check_all.sh` grep guard |
 | E1 `p2k erc` | 3 | **done** (2686b4b): `ERC_FATAL_WARNINGS`, `ERC_PENDING` (TC's `"type REF PIN"` keys), `--no-pending`, report `reports/erc.rpt`. Same verdict as the board `erc.sh` on PSU, HV (no keys), PA (`{"no_connect_connected"}`), PR, PF (`+ "footprint_link_issues"`), TC (`{"no_connect_connected"}`, empty `ERC_PENDING` = its empty `erc_pending.txt`). Negative: PF without `kicad/fp-lib-table` → 89 FATAL WARNING footprint_link_issues, exit 1; synthetic report: error fails, fatal warning fails, matching pending entry passes, stale pending entry fails. AC keeps its `erc.sh` (D-AC) |
 | K1 `place(mirror=, fields_auto=)` | 4 | **done** (631e74b): `mirror="x" \| "y"` for every rotation, KiCad order verified with kicad-cli (12 rotation x mirror combinations of an MPSA92, labels on the returned pin points: all 36 pins on their label net; the other order, mirror in the library frame then rotate, puts 12 pins on unconnected nets). Default Reference / Value positions of multi-pin symbols mirrored (hidden fields keep the unmirrored offset, so the migration from `place_mirrored` stays identical); a mirrored symbol keeps the library justification (no rot-180 swap), rendered beside the body. `fields_auto=True`: Reference / Value centred above the transformed body (rendered check). Migration proven (scratch): `place_mirrored` → `place(..., 0, mirror=axis)` in PA, PR, PF, HV, TC and PF `place_rot90_mirrored` → `place(..., 90, mirror="y")`: every sheet byte-identical. Negative: `mirror="z"` → ValueError (before anything is added) |
-| K2 `place(text_gap=)` | 4 | **done** (631e74b): mm or `"body"` (half body height + 1.27 rounded up to the grid: 3.81 for C, 2.54 for R); with `text="above"` / `"below"` both texts on that side, 1.905 apart. Migration: PR `hcap()`, HV `_hcap()` and `si8271_cell` → `text_gap=3.81` and also `text_gap="body"`: identical. **PF `ph()` → `text_gap=3.175` (with its `text="above"`) is identical except the field angle of 5 capacitors (10 lines, 0 → 270 / 90)**: PF passes angle 0 on a rotated capacitor, so its committed texts are drawn vertical over the plates (render); the shared version draws them horizontal. PF's migration therefore re-baselines `kicad/01_*.kicad_sch` and `03_*.kicad_sch` (a cosmetic fix, its own reviewed commit). Negative: text_gap on a vertical part → ValueError |
+| K2 `place(text_gap=)` | 4 | **done** (631e74b): mm or `"body"` (half body height + 1.27 rounded up to the grid: 3.81 for C, 2.54 for R); with `text="above"` / `"below"` both texts on that side, 1.905 apart. Migration: PR `hcap()`, HV `_hcap()` and `si8271_cell` → `text_gap=3.81` and also `text_gap="body"`: identical. **PF `ph()` → `text_gap=3.175` (with its `text="above"`) is identical except the field angle of 5 capacitors (10 lines, 0 → 270 / 90)**: PF passes angle 0 on a rotated capacitor, so its committed texts are drawn vertical over the plates (render); the shared version draws them horizontal. PF's migration therefore re-baselines `kicad/01_*.kicad_sch` and `03_*.kicad_sch` (a cosmetic fix, its own reviewed commit; **accepted by the user, decision D-K2**). Negative: text_gap on a vertical part → ValueError |
 | K3 `place(hide_value=)` | 4 | **done** (631e74b): Value field `(hide yes)` (also with `value_at`) |
 | K4 `terminal(symbol=, value=, justify=)` | 4 | **done** (631e74b): `justify="legacy"` (default, unchanged) / `"away"`. Migration: `term()` of PA, PR, PF, HV, TC → `terminal(sh, ref, x, y, d, symbol=sym(ref), value=sh_value(ref), justify="away")`: identical. Negative: unknown justify → ValueError |
 | K5 `sheetkit.rail()` | 4 | **done** (631e74b): `rail(sh, p, y= \| x=, junction=True)`; PR's `gnd(p)` in sheets 01-03 → `rail(sh, p, y=P(0, GND)[1])`: identical. Negative: neither / both of x, y → ValueError |
@@ -910,6 +933,13 @@ All three were answered on 2026-11-20 (section "Decisions": D-R, D-Z, D-AC). Kep
 | CF2 strict `pad_extent` | 5 | **done** (fa46323): Proteus pad = circle (THT, w = h) or w x h rectangle, KiCad outline sampled, tol 0.005 mm; `-v` lists them as notes, the id fails. PA: 12 parts (e.g. D1 square pad K +0.309 mm, C5 + 0.041 mm): no board can turn the id on without pad decisions |
 | CF3 fp-lib-table resolve | 5 | **done** (fa46323): with `FP_LIB_TABLE`: missing table, missing entry, uri ≠ `lib/<PROJECT>.pretty` (negative: "points to ${KIPRJMOD}/../lib/other.pretty"), missing footprint file. Without the key: unchanged (OK with no table) |
 | fpgeom `free_angle` | 5 | **done** (fa46323): `fit(..., free_angle=True)`: PF U4 pads rotated by 45.3°: snapped fit 45° / 0.06 mm, free 45.3° / 0.000 mm |
+| F11 `p2k.check_pin_order` | 6 | **done** (306c26e): `PIN_ORDER` entries (base `footprint=` + `renumber=` / `spec=` / `rule=` / `ideal=`, `symbol_renumber=`; target `refs=` / `on_ideal=`; `mirror` True / False / None + `res`, `other`, `angle`, `free_angle`, `nofit`, `polarity`, `turn`, `distances`), `PIN_ORDER_BOTTOM`, `PIN_ORDER_MAX_MOVE`, `FOOTPRINT_SCRIPT` (imported without bytecode, PR17), `--render` (side silk + assembly panels). Tie rule: within 0.001 mm the expected side counts (HV / TC rule; PA / PR / PF took unmirrored on a tie, which only differs for an expected-mirrored symmetric pattern). Proven per board in scratch clones (`tools/p2k` symlinked; table in `p2k_config.py`, `check_all.sh` step switched, board script deleted, `check_all.sh` ALL CHECKS PASSED, nothing generated changed): every residual / angle equal to the board script's output. PA 9 entries (5 groups, ideal octal, octal footprint vs ideal, octal on IPC, `PIN_ORDER_BOTTOM` U6-U9); PR 11 (`spec=` for the derived groups + `polarity` K / + / + / 2, relay `symbol_renumber=dict(symbol="G5V-2", pattern=r"(COIL\|COM\|NC\|NO)(\d+)")`, noval ideal / footprint / IPC with `other=0.02`, `PIN_ORDER_MAX_MOVE` = its `MOVE_LIMIT`, bottom U1-U3); PF 15 (`spec=` + `polarity`, `G5V2_POLE1` computed in `p2k_config.py` from `IPC_PIN_IDS`, noval with `free_angle` and `other=1.0`, `turn="clockwise"`, SW4-6 `distances`, bottom U4 U5); HV 13 (`spec=`, two `mirror=None` entries); TC 20 (`rule=`, U10 `angle=180`). Negative tests, same verdict as the board script: PA octal expected unmirrored; `bottom=True` removed (footprint vs ideal, IPC fit, footprint_fit.csv sides); U7 on F.Cu; R5 on B.Cu. PR 3b relay COM / NC swapped (5.080 + pads moved 5.080); 3c C2 + / - swapped and C28 renumbering dropped (polarity; the board script crashed with KeyError on the latter); 4 noval expected unmirrored; R2 symbol pin names COM13 / NC11 swapped; S1 U2 on F.Cu; S3 `bottom` removed. PF 5 relay expected mirrored; 7 C1 renumbering 1 → 1 (board: "renumbering differs from gen_footprints", shared: polarity); 8 sense counter-clockwise; `bottom` removed; U4 on F.Cu; R13 on B.Cu; noval library footprint with mirrored ids. HV T3 ADC A1 / COM2 swapped; J1 without the rows-swapped renumbering. TC T3; U10 expected at 90°; N2 two rules for SN74AXC8T245 (board: AssertionError, shared: an ERROR line). Tool: missing `PIN_ORDER`, two base keys, unknown key (typo), unknown refdes, unknown spec, `PIN_ORDER_MAX_MOVE` with an unlisted spec and an unknown name, symbol pattern mismatch, wrong distance, `nofit` violated, missing `FOOTPRINT_SCRIPT`, unknown argument (exit 2). Not reproduced: PF's "renumbering equals gen_footprints" (with `spec=` there is no second copy; `polarity` is the independent statement, it caught PF test 7) and TC's two `rule()` equality asserts (TL084HIDYYR / TPS73030 share a footprint; a board may add entries for them) |
+| CP1 `p2k.check_pads` | 6 | **done** (306c26e): HV's check (bbox ±0.01, area ± `CHECK_PADS_AREA_TOL` 0.06, drill ±0.005, pad flashes `ComponentPad` / `SMDPad` / `BGAPad`), parts `PROTEUS_PADS_CHECK` else `PROTEUS_PADS`. HV scratch: 13 parts, 130 pads, 334 pad layers OK, as `check_proteus_pads.py`. Negative (same counts as the board script): TO-220 drill 1.1 (12), long axis turned (48), J1 pad 2 square (4), C1 (KiCad pads) added (10), unknown refdes, neither key; `PROTEUS_PADS` fallback OK |
+| B1 `HOLE_PREFIX` / `HOLE_START`, strict `hole_refdes` | 7a | **done** (6fc78ea): build_pcb names, collision WARNING (stdout) / error under the id; ipc356_diff hole pattern from the prefix; `ipc_to_kicad_nets` skips board-only footprints. PR migration (`HOLE_START = 101`, `rename_holes.py` and its make_pcb step removed): board file and every report identical. Negative: PR without `HOLE_START` → WARNING H4 H5 and board not up to date; with the id → ERROR, make_pcb FAILED; `HOLE_START = 101` + id → identical; `HOLE_PREFIX = "MH"` board: ipc356_diff OK with the key, FAILED (holes unknown) without it |
+| B2 `{slash}` in unconnected names | 7a | **done** (6fc78ea), on by default (no finished board has such a name except TC through its wrapper; idempotent under the wrapper). TC scratch with `pcb_wrap.py` patch 4 dropped: board identical, DRC parity OK |
+| B3 `BGAPad` | 7a (roundtrip part: 8) | **done** in check_sources and gerber_to_tracks (6fc78ea). TC scratch with `pcb_wrap.py` patch 2 dropped: board identical. Shared `p2k check_sources` on TC: before, 225 "U10-… has no flash" errors plus the 4 SMD test pads (B4); now only the test pads (TC keeps its wrapper until 7b). `gerber_roundtrip.PAD_FUNCTIONS` not changed (TC `phase4_wrap.py` asserts it): batch 8 |
+| I6 `IPC_PIN_IDS` | 7a | **done** (6fc78ea): `ipc356.pin_ids()` called once in `main` (PF wrapper semantics and messages, plus PF's "pin ids renamed" stdout line); skipped when a board wrapper replaced `ipc356.parse`, so unmigrated PF (wrapper on top) is unchanged (regression). No `pin_proteus` field: `reference/` stays identical (a field can come later, only with the key). PF migration (`tools/ipc356.py` deleted, `check_all.sh` → `p2k ipc356 --check`): `reference/` and everything else identical, ALL CHECKS PASSED. Negative: unknown refdes, pin 8 not listed, target twice, extra pin 9 (each exit 1 with PF's message); key removed → reference/ stale. HV J1 / TC J11 renumbering = board design commits (D-PIN), not done here |
+| I7 `REMOVED_TRACKS` direction + count | 7a | **done** (6fc78ea): drawn-direction entry first (1e-6 mm), then either direction (0.001); `(reason, n)` = exactly n draws (`pcb.removed_track_count`); gerber_roundtrip uses the same matcher. Plain entries: old check and message unchanged. TC: `pcb_wrap.py` patch 5 dropped → board identical; also the GND out / back pair as one entry `(reason, 2)` → identical. HV: `REMOVED_DOT_TRACKS` → `("B.Cu", -32.85196, -11.53736, -32.85196, -11.53737): ("OUT1: …", 2)`, `remove_dot_tracks.py` and its step removed → **same copper but not byte-identical**: the board file's item order / UUIDs (sorted without UUIDs: identical), `reports/assign_nets.txt` (orphan order) and `roundtrip.txt` ("3 Conductor draws (REMOVED_TRACKS)", Proteus 874 draws instead of 876: the dot draws are now recorded deviations on both sides); HV's migration is a re-baseline (reviewed board commit). Negative: HV count 1 → "2 listed, found 3 draws", count 3 → "…: 2 draws, expected 3", count 0 → error; TC without the "(back)" entry → "25 listed, found 26 draws" |
 
 Every other entry: open.
 
@@ -991,26 +1021,48 @@ board). The migrations (section 5) were proven separately in scratch clones with
 symlinked to the working tree: every sheet, library, map, `kicad/fp-lib-table` and
 `reports/footprint_*.csv` identical, except PF's capacitor text angles (K2).
 
+**Batch 6, p2k 306c26e, and batch 7a, p2k 6fc78ea, 2026-11-20** (`tools/regress.sh -j 5 <commit>
+<board>@<HEAD> ...` on the board HEADs recorded at the start of the session (unchanged since batch 4);
+batch 6 compared with 3c4818b (= fa46323 code), 7a with 306c26e on the same commits; five tube boards,
+D-REG): ALL BOARDS PASS at both commits.
+
+| Board | HEAD | 306c26e | 6fc78ea | stdout vs previous p2k (same HEAD) |
+|---|---|---|---|---|
+| tube_power_amp_kicad | 18de7a9 | PASS | PASS | identical |
+| tube_preamp_kicad | b2adf22 | PASS | PASS | 6fc78ea: one new stdout line per build_pcb run, `build_pcb: WARNING mounting hole refdes equal schematic refdes: H4 H5 (set HOLE_START / HOLE_PREFIX)` (B1; PR's `rename_holes.py` renames them afterwards, so the board is unchanged); otherwise identical |
+| tube_pi_fxloop_kicad | da551f3 | PASS | PASS | identical (its `tools/ipc356.py` wrapper on top of the shared `IPC_PIN_IDS`: the shared renaming is skipped) |
+| tube_hv_supplies_kicad | 6cb1d3f | PASS | PASS | identical |
+| ti60f225_tube_control_card | d2a4f66 | PASS | PASS | identical, except the KiCad DRC `unconnected` item text of Net-(RS1-B) at 6fc78ea (varies between runs, not p2k) |
+
+The board scripts were not changed, so these runs prove the defaults. The migrations were proven
+separately in scratch clones with `tools/p2k` symlinked to the working tree (section 5): batch 6 on all
+five boards (`check_all.sh` ALL CHECKS PASSED, nothing generated changed); 7a PR / PF / TC identical,
+HV a re-baseline (I7). A first 7a draft with `"BGAPad"` in `gerber_roundtrip.PAD_FUNCTIONS` failed TC's
+scratch `check_all.sh` (phase4_wrap assert): moved to batch 8 before the commit.
+
 ## 7. Next batch: prompt for the next session
 
-> You work in ~/dev/proteus2kicad (main). Task: batch 6 of docs/CANDIDATES.md (pin order and pad
-> checks: F11 new `p2k/check_pin_order.py` with a `PIN_ORDER` table, CP1 new `p2k/check_pads.py`,
-> `bin/p2k`; `fpgeom.fit(free_angle=True)` exists since fa46323), then batch 7a (PCB build chain:
-> B2, B1 / `HOLE_START`, I7, B3, I6 `IPC_PIN_IDS` per D-PIN) the same way if batch 6 is committed
-> and green. Read CANDIDATES.md first (section 0 rules, "Decisions" incl. D-REG, section 3 batches
-> 6-7, sections 5-6 for what is done), README.md and CONVERSION_PLAYBOOK.md section 4. Every change:
-> no key, no change (defaults byte-identical), strict checks register a `board.STRICT_IDS` id
-> (opt-in), negative-tested, documented in README.md. F11 is the largest lift: read the five
-> `tools/check_pin_order.py` (PA, PR, PF, HV, TC) and their STATUS.md negative tests first; the
-> shared tool must reproduce each board's verdicts and expectations (residual class, mirror state,
-> angle, polarity, ideal circle, turn), and every board's negative tests are re-run against it in
-> a scratch clone before the board script would be deleted. Regression: the five tube boards only
-> (D-REG; `tools/regress.sh` default): commit, record the board HEADs, run `tools/regress.sh -j 5
-> <commit> <board>@<HEAD> ...` and the previous p2k commit on the same list, diff the per-board
-> logs (TC's DRC `unconnected` item text varies between runs). Do not edit `tools/regress.sh` while
-> a run is in progress (bash reads it incrementally). Prove each migration in a scratch clone
-> (`git clone` of the board, `tools/p2k` symlinked to this repo, regenerate, clean `git status`). Do
-> NOT commit anything in a board repo, and do nothing with tube_psu_kicad or ac_psu_kicad. A
-> cosmetic change that would alter committed `reference/*.md` goes to batch R (D-R). Commit and
-> push after each batch, update sections 5-6, and replace this prompt with the one for the
-> following batch.
+> You work in ~/dev/proteus2kicad (main). Task: batch 7b of docs/CANDIDATES.md (TC features: B4
+> `SMD_FREE_PADS`, B5 `SPLIT_PIN_MERGES`, in `ipc356.py`, `check_sources.py`, `pcb.py`,
+> `gerber_to_tracks.py`, `assign_nets.py`, `check_board.py`, `drc.py`, `compare_netlists.py`), then
+> batch 7c (B6 `ASSIGN_NETS_CHECK_REPORT`, B7 `DRC_ACCEPTED_ITEMS`, B8 `DRC_EXPECTED_WARNINGS`, B9
+> `PENDING`, B10 strict `track_nets`) the same way if 7b is committed and green. Read CANDIDATES.md
+> first (section 0 rules, "Decisions" incl. D-REG and D-K2, section 3 batches 7b / 7c, sections 5-6
+> for what is done, the B4 / B5 / B6-B10 designs in section 1.6), README.md and TC's board code that
+> 7b replaces (`tools/pcb_wrap.py` patches 1 and 3, `ipc356_check.py`, `check_sources.py`, the D1 part
+> of `compare_netlists.py` and `drc_check.py`, `phase4_wrap.py` for the Phase 4 parts that stay for
+> batch 8). Every change: no key, no change (defaults byte-identical), strict checks register a
+> `board.STRICT_IDS` id (opt-in), negative-tested, documented in README.md; wrapper semantics are the
+> spec (rule 4), and TC's wrappers must keep working on top of the new p2k until TC migrates (7a
+> example: `ipc356.pin_ids` is skipped when PF's wrapper replaced `parse`; `"BGAPad"` in
+> `gerber_roundtrip.PAD_FUNCTIONS` waits for batch 8 because TC's `phase4_wrap.py` asserts it). Prove
+> TC's 7b migration in a scratch clone (`git clone` of the board, `tools/p2k` symlinked to this repo,
+> full regenerate as in `tools/regress.sh` `regen()`, `check_all.sh`, clean `git status`); the board
+> file and reports must be identical. Regression: the five tube boards only (D-REG): commit, record the
+> board HEADs, run `tools/regress.sh -j 5 <commit> <board>@<HEAD> ...` and the previous p2k commit on the
+> same list (or reuse the previous run's logs on the same HEADs), diff the per-board logs (TC's DRC
+> `unconnected` item text varies between runs). Do not edit `tools/regress.sh` while a run is in
+> progress (bash reads it incrementally). Do NOT commit anything in a board repo, and do nothing with
+> tube_psu_kicad, its control card or ac_psu_kicad. A cosmetic change that would alter committed
+> `reference/*.md` goes to batch R (D-R). Commit and push after each batch, update sections 5-6, and
+> replace this prompt with the one for the following batch.
