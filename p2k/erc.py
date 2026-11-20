@@ -17,7 +17,10 @@ p2k_config.py keys
   ERC_PENDING          {"<type> <refdes> <pin>": reason}: errors expected while sheets are still
                        missing (matched against the first item of a violation, "Symbol <refdes>
                        Pin <pin>"); must be empty when the schematic is complete
---no-pending ignores ERC_PENDING (for tests on a scratch copy).
+  PENDING              {"erc": {pattern: question}}: errors / fatal warnings ("<type>: <items>")
+                       that wait for a user decision (see board.judge_pending); printed as
+                       "PENDING USER DECISION", an entry that matches nothing fails
+--no-pending ignores ERC_PENDING and PENDING["erc"] (for tests on a scratch copy).
 """
 import os
 import re
@@ -48,7 +51,7 @@ def key(v):
     return f"{v[0]} {m.group(1)} {m.group(2)}" if m else None
 
 
-def judge(rpt, fatal_types=(), pending=None):
+def judge(rpt, fatal_types=(), pending=None, decisions=True):
     """Print the verdict of a report; return the exit code."""
     pending = {" ".join(k.split()): why for k, why in (pending or {}).items()}
     vs = violations(rpt)
@@ -58,6 +61,14 @@ def judge(rpt, fatal_types=(), pending=None):
     seen = {key(v) for v in errors}
     stale = sorted(k for k in pending if k not in seen)
     fatal = [v for v in warns if v[0] in fatal_types]
+    questions, pstale = [], []
+    if decisions and board.pending("erc"):
+        # PENDING["erc"]: errors / fatal warnings that wait for a user decision ("<type>: <items>")
+        text = lambda v: f"{v[0]}: " + " | ".join(v[2])
+        rest, questions, pstale = board.judge_pending("erc", [text(v) for v in real + fatal])
+        keep = set(rest)
+        real = [v for v in real if text(v) in keep]
+        fatal = [v for v in fatal if text(v) in keep]
     for v in real:
         print(f"erc: ERROR {v[0]}: " + " | ".join(v[2]))
     for v in fatal:
@@ -69,7 +80,13 @@ def judge(rpt, fatal_types=(), pending=None):
           + (" (" + ", ".join(f"{n} {t}" for t, n in sorted(by_type.items())) + ")" if warns else "")
           + (f", {len(errors) - len(real)} pending errors (ERC_PENDING)" if pending else "")
           + f" ({os.path.relpath(rpt)})")
-    return 1 if real or fatal or stale else 0
+    for p in pstale:
+        print("erc: ERROR " + p)
+    bad = real or fatal or stale or pstale
+    if not bad:
+        for q in questions:
+            print("erc: PENDING USER DECISION: " + q)
+    return 1 if bad else 0
 
 
 def main(argv=None):
@@ -87,7 +104,7 @@ def main(argv=None):
     if r.returncode != 0 or not os.path.exists(rpt):
         print(f"erc: kicad-cli failed:\n{r.stdout}{r.stderr}")
         return 1
-    return judge(rpt, fatal_types, pending)
+    return judge(rpt, fatal_types, pending, use_pending)
 
 
 if __name__ == "__main__":

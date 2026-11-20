@@ -63,6 +63,7 @@ STRICT_IDS = frozenset({
     "derive_max_move",       # footprints (F3)
     "pad_extent",            # check_footprints (CF2)
     "hole_refdes",           # build_pcb (B1)
+    "track_nets",            # check_board (B10)
 })
 
 
@@ -88,6 +89,44 @@ def strict(check_id):
     if check_id not in STRICT_IDS:
         raise ValueError(f"p2k.board.strict: {check_id!r} is not in STRICT_IDS")
     return check_id in strict_checks()
+
+
+# Tools that read PENDING (B9); ipc356_diff and gerber_roundtrip follow in a later batch, so an
+# entry for them fails instead of being ignored.
+PENDING_TOOLS = frozenset({"drc", "assign_nets", "erc"})
+
+
+def pending(tool):
+    """PENDING[tool] ({item pattern (regex): question}) of the config, {} without the key. PENDING =
+    {tool: {...}}: open user decisions, see judge_pending(). An unknown tool key is an error."""
+    val = getattr(config(), "PENDING", {}) or {}
+    unknown = set(val) - PENDING_TOOLS
+    if unknown:
+        raise SystemExit(f"p2k: PENDING: unknown or unsupported tool(s) {sorted(unknown)} "
+                         f"(supported: {sorted(PENDING_TOOLS)})")
+    return val.get(tool, {}) or {}
+
+
+def judge_pending(tool, failures):
+    """Split a tool's failure texts by PENDING[tool]: -> (unmatched failures, questions, stale).
+    A failure matched by a pattern (re.search) is pending; every pattern must match at least one
+    failure, else it is stale (the decision was made: remove the entry). The tool passes only
+    when nothing is unmatched and nothing is stale; it prints `PENDING USER DECISION: <question>`
+    per entry (check_all.sh counts those)."""
+    import re
+    entries = pending(tool)
+    rest, hit = [], {k: 0 for k in entries}
+    for f in failures:
+        keys = [k for k in entries if re.search(k, f)]
+        if keys:
+            for k in keys:
+                hit[k] += 1
+        else:
+            rest.append(f)
+    questions = [f"{q} ({hit[k]} item{'s' if hit[k] != 1 else ''})" for k, q in entries.items() if hit[k]]
+    stale = [f"PENDING[{tool!r}] entry {k!r} matches no failure (decision made? remove it): {q}"
+             for k, q in entries.items() if not hit[k]]
+    return rest, questions, stale
 
 
 def path(*parts):

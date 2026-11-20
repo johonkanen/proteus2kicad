@@ -19,7 +19,11 @@ Default mode (after gerber_to_tracks.py), Proteus geometry:
   filled zones of the saved board; every item must carry its group's net, 0 shorts,
   0 opens. Nothing is changed.
 Report: reports/assign_nets.txt (default mode writes the stage A/B sections, --check
-replaces its own section at the end).
+replaces its own section at the end; with ASSIGN_NETS_CHECK_REPORT the --check section goes to
+that file instead and the committed report is not touched).
+PENDING = {"assign_nets": {pattern: question}} (optional): --check passes when its failures (texts
+"short: <net>: <pads>; ... | touching on ...", "open <net>: n groups [pads] ...", "foreign net:
+<item>") are all matched by an entry and every entry still matches; prints "PENDING USER DECISION".
 
 SPLIT_PIN_MERGES (optional): the open of such a pin's KiCad net is accepted exactly when it has
 two groups and the pin's two pads lie in different groups (listed as "accepted open" in the
@@ -38,13 +42,26 @@ from collections import defaultdict
 
 import pcbnew
 
-from . import geom2d
+from . import board as _board, geom2d
 from . import pcb as bc
 from .gerber_to_tracks import flash_shape, load_copper
 
 
 def report_path():
     return os.path.join(bc.reports_dir(), "assign_nets.txt")
+
+
+def check_report_path():
+    """ASSIGN_NETS_CHECK_REPORT (optional, path relative to the board root, e.g.
+    "reports/assign_nets_check.txt"): where --check writes its section; None = appended to
+    reports/assign_nets.txt (default). With P2K_REPORTS / configure(reports=) set, the file name goes
+    into that directory instead."""
+    rel = getattr(bc.cfg(), "ASSIGN_NETS_CHECK_REPORT", None)
+    if not rel:
+        return None
+    if "reports" in bc._over or os.environ.get("P2K_REPORTS"):
+        return os.path.join(bc.reports_dir(), os.path.basename(rel))
+    return _board.path(rel)
 
 
 def pour_nets_path():
@@ -365,21 +382,47 @@ def run_check(board, layers, vianets):
                 elif not net and own:
                     wrong.append(f"{it.label}: net {own!r}, group has no pad")
     describe("after zone fill (KiCad pads, tracks, vias, filled zones)", items, res, out)
+    short_text = {}
     for g, _ in res["shorts"]:
+        touch = []
         for a, b, layer in conflicts(items, res["groups"][g], layers):
-            out.append(f"  touching on {layer}: {a.label} [{a.obj.GetNetname()}] - {b.label} [{b.obj.GetNetname()}]")
+            touch.append(f"touching on {layer}: {a.label} [{a.obj.GetNetname()}] - {b.label} [{b.obj.GetNetname()}]")
+        out.extend("  " + t for t in touch)
+        short_text[g] = touch
     out.append(f"items carrying another net than their group: {len(wrong)}")
     out.extend("  " + w for w in wrong[:100])
-    head = ""
-    if os.path.exists(report_path()):
-        with open(report_path()) as f:
-            head = f.read().split(out[0] + "\n")[0]  # keep the stage A/B sections, replace this one
-    with open(report_path(), "w") as f:
-        f.write(head + "\n".join(out) + "\n")
+    cpath = check_report_path()
+    if cpath:   # ASSIGN_NETS_CHECK_REPORT: this section in its own file, the committed report untouched
+        os.makedirs(os.path.dirname(cpath), exist_ok=True)
+        with open(cpath, "w") as f:
+            f.write("\n".join(out) + "\n")
+    else:
+        head = ""
+        if os.path.exists(report_path()):
+            with open(report_path()) as f:
+                head = f.read().split(out[0] + "\n")[0]  # keep the stage A/B sections, replace this one
+        with open(report_path(), "w") as f:
+            f.write(head + "\n".join(out) + "\n")
     print(summary("after zone fill", res) + f", {len(wrong)} items with a foreign net")
     for line in out[1:40]:
         if line.startswith("  "):
             print("assign_nets:" + line)
+    failures = (["short: " + "; ".join(f"{n}: {' '.join(sorted(v))}" for n, v in nets.items())
+                 + "".join(" | " + t for t in short_text[g]) for g, nets in res["shorts"]]
+                + [f"open {net}: {len(gs)} groups" + "".join(
+                    " [" + " ".join(sorted(items[i].label for i in res["groups"][g] if items[i].kind == "pad")) + "]"
+                    for g in gs) for net, gs in res["opens"]]
+                + ["foreign net: " + w for w in wrong])
+    if _board.pending("assign_nets"):
+        rest, questions, stale = _board.judge_pending("assign_nets", failures)
+        for st in stale:
+            print("assign_nets: ERROR " + st)
+        for r in rest:
+            print("assign_nets: not pending: " + r[:300])
+        if not rest and not stale:
+            for q in questions:
+                print("assign_nets: PENDING USER DECISION: " + q)
+        return not rest and not stale
     return not res["shorts"] and not res["opens"] and not wrong
 
 
@@ -391,7 +434,8 @@ def main():
         ok = run_check(board, layers, vianets)
     else:
         ok = run_assign(board, layers, vianets)
-    print("assign_nets: " + ("OK" if ok else "FAILED") + f" (report {bc.rel(report_path())})")
+    rpt = check_report_path() if "--check" in sys.argv and check_report_path() else report_path()
+    print("assign_nets: " + ("OK" if ok else "FAILED") + f" (report {bc.rel(rpt)})")
     sys.exit(0 if ok else 1)
 
 

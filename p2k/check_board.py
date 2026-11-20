@@ -14,6 +14,9 @@ Vias:  every IPC via has a board via at its position (0.01 mm) with the IPC dril
        size on the IPC net (except the REMOVED_VIAS of the config: no board via there), and
        every board via is an IPC via.
 Copper: every track and via has a net, every zone has a net (after the full make_pcb run).
+       Strict id `track_nets`: the track / via nets as written in the board file (s-expression)
+       equal the net of their copper group (assign_nets geometry; pcbnew re-derives the nets on
+       load, so a net edited in the file is otherwise seen only by the byte compare).
 
 A board wrapper may call main(added=..., extra_vias=...): `added` = {refdes: {"pins": {pin:
 net}}} for parts added after the Proteus design (no IPC pads; their pads must be on the listed
@@ -217,6 +220,42 @@ def check_copper(board, recs, mapping, errors, extra_vias):
     return len(tracks), len(vias), len(zones)
 
 
+def check_track_nets(board, errors):
+    """Strict check `track_nets` (B10): the net of every track / arc / via as written in the board
+    file (s-expression; pcbnew re-derives the nets on load, so a net edited in the file is otherwise
+    seen only by a byte compare) equals the net of its copper group (assign_nets --check geometry:
+    pads, tracks, vias, filled zones). -> number of items compared"""
+    from . import assign_nets as an
+    from . import sexpr
+    tree = sexpr.load(bc.board_file())
+    file_net = {}
+    for head in ("segment", "arc", "via"):
+        for node in sexpr.find_all(tree, head):
+            uid, net = sexpr.find(node, "uuid"), sexpr.find(node, "net")
+            if uid is not None:
+                file_net[str(uid[1])] = str(net[1]) if net is not None and len(net) > 1 else ""
+    layers = an.load_copper()
+    items = an.build_items(board, layers, "C", an.ipc_via_nets(board))
+    res = an.analyse(items, an.connect(items, layers))
+    n = 0
+    for g, members in res["groups"].items():
+        want = res["net_of"].get(g)
+        for i in members:
+            it = items[i]
+            if it.kind not in ("track", "via"):
+                continue
+            uid = it.obj.m_Uuid.AsString()
+            if uid not in file_net:
+                errors.append(f"track_nets: {it.label}: not found in the board file (uuid {uid})")
+                continue
+            n += 1
+            if want and file_net[uid] != want:
+                errors.append(f"track_nets: {it.label}: net {file_net[uid]!r} in the board file, connected to {want}")
+    if n != len(file_net):
+        errors.append(f"track_nets: {len(file_net)} tracks / vias in the board file, {n} compared")
+    return n
+
+
 def main(argv=None, added=None, extra_vias=None):
     argv = sys.argv[1:] if argv is None else argv
     board = pcbnew.LoadBoard(bc.board_file())
@@ -239,6 +278,9 @@ def main(argv=None, added=None, extra_vias=None):
     if "--pads-only" not in argv:
         nt, nv, nz = check_copper(board, recs, mapping, errors, extra_vias or [])
         print(f"check_board: {nt} tracks, {nv} vias, {nz} zones")
+        if bc._board.strict("track_nets"):
+            n = check_track_nets(board, errors)
+            print(f"check_board: {n} track / via nets in the board file = their copper group's net (track_nets)")
     for e in errors[:60]:
         print("check_board: ERROR " + e)
     if len(errors) > 60:
