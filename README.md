@@ -9,6 +9,20 @@ Extracted from the `ac_psu_kicad` migration (single_phase_inverter_psu_v3) and u
 `tube_psu_kicad` (tube_power_5_1). The method – phases, checks, pitfalls, model and session
 plan, regression test for tool changes – is in [`CONVERSION_PLAYBOOK.md`](CONVERSION_PLAYBOOK.md).
 
+## Changes (upgrade notes)
+
+Board repos pin `tools/p2k` to a commit, so these take effect when a board bumps past them.
+Behaviour changes that make a finished board fail or re-baseline committed files:
+
+- **Report texts of `p2k ipc356` (batch R).** The cheat sheets in `reference/` change on the
+  next `p2k ipc356` run: `pin_nets_by_component.md` prints `Net aliases: none.` /
+  `Refdes restored from 6-char truncation: none.` instead of a bare `.` when the key is empty,
+  and its `Index:` line names a refdes whose letter prefix no other refdes has by its full name
+  (`HT_0 (1)`, `P6 (1)`, `OSC1 (1)`; was `HT_ (1)`, `P (1)`, `OSC (1)`); `pins_by_net.md` lists
+  a pin with two pads (two-hole terminal) once, and its pin count drops accordingly. Upgrade:
+  run `p2k ipc356` and commit the regenerated `reference/*.md` with the bump (text only; the
+  `.csv` / `.json` tables and every check are unchanged).
+
 ## Use in a board repository
 
 Add as a submodule (pinned commit, so a tool change never silently changes a finished board):
@@ -42,7 +56,7 @@ footprint rules and project footprints, `lib/`, `reference/`, `kicad/`, `reports
 
 | Tool | What | Needs |
 |---|---|---|
-| `ipc356` | IPC-D-356A → `reference/ipc356_pads.{json,csv}`, `pin_nets_by_component.md`, `pins_by_net.md`; `--check` = counts + fix-ups + files up to date; `IPC_PIN_IDS` renames pin ids per refdes before anything is checked or written (so every tool sees the KiCad pad numbers); `--check` accepts exactly the `SPLIT_PIN_MERGES` pins and the `SMD_FREE_PADS` records (printed as `accepted:`) | python3 |
+| `ipc356` | IPC-D-356A → `reference/ipc356_pads.{json,csv}`, `pin_nets_by_component.md`, `pins_by_net.md`; `--check` = counts + fix-ups + files up to date; `IPC_PIN_IDS` renames pin ids per refdes before anything is checked or written (so every tool sees the KiCad pad numbers); `--check` accepts exactly the `SPLIT_PIN_MERGES` pins and the `SMD_FREE_PADS` records (printed as `accepted:`); cheat-sheet texts: an empty `NET_ALIASES` / `TRUNCATED_REFDES` prints `none`, the index groups refdes by letter prefix only when two or more share it (else the refdes itself: `HT_0`, `P6`), `pins_by_net.md` lists each pin once (a pin with two pads is one member) | python3 |
 | `check_sources` | Gerber X2 export vs IPC: via / component / free / SMD pad flashes (`BGAPad,CuDef` flashes count as SMD pads) and drills 1:1, one `SameCoordinates` id, outline; the `SMD_FREE_PADS` records are matched with the SMD pad flashes of their side only (no OtherPad / OtherDrill flash); `BGA_REFDES`: the BGAPad flashes of every copper layer are exactly the IPC pads of those parts on that side | python3 |
 | `check_symbols` | every refdes of `lib/part_map.csv`: symbol pin set = IPC pin set; power symbols are IPC nets; strict id `no_connect_pin_type`: no on-board symbol has a pin of electrical type `no_connect` | python3 |
 | `compare_netlists` | KiCad schematic netlist vs IPC by pad sets (`--sheet N`, `--allow-missing` while drawing; schematic `--schematic`, else `$P2K_SCHEMATIC`, else `kicad/<PROJECT>.kicad_sch`); type-safe natural sort (refdes `SEND` next to `SEND1`); the net counts leave out N/C / no-net pins (printed separately); optional part-map column `units` (`A:2 B:5 ...`): pins of an undrawn unit are pending (warnings) when its page is outside `--sheet` or with `--allow-missing`; strict ids `nc_joined` (an `unconnected-(…)` net with more than one pin fails) and `net_names` (a "name hint" fails); `SPLIT_PIN_MERGES`: the IPC split pins must equal the key, then each merged net is joined into its kept net (printed) | python3, kicad-cli |
