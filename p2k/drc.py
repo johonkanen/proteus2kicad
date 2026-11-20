@@ -14,7 +14,14 @@ decision; passes only when every remaining failure is listed and every entry sti
 prints "PENDING USER DECISION: <question>". SPLIT_PIN_MERGES (optional): exactly one unconnected item per KiCad
 net of such a pin (its two pads have no copper between them) is accepted (printed).
 
+--by-refdes [drc.json] (B13, a report option: no DRC run, stdout only) reads an existing report
+(default <reports>/drc.json, written by `p2k drc`) and attributes every error-severity violation whose
+type is not in DRC_ACCEPTED to the parts whose pads it names: per refdes the violation types and the
+smallest "actual" distance; violations that name no footprint pad are listed as "other" (not a pad
+question). Lifted from the control card's tools/drc_pads.py.
+
 Usage: tools/p2k/bin/p2k drc [-v]
+       tools/p2k/bin/p2k drc --by-refdes [drc.json]
 """
 import json
 import os
@@ -48,8 +55,57 @@ def split_pin_unconnected(unconnected):
     return rest, [f"{want[n]} {n}" for n in sorted(seen)], errors
 
 
+PAD = re.compile(r"^(?:PTH |NPTH )?[Pp]ad (\S+) \[([^]]*)\] of (\S+)")
+ACTUAL = re.compile(r"actual (-?[0-9.]+) mm")
+
+
+def by_refdes(report):
+    """Per-refdes table of the pad-caused DRC errors of a kicad-cli JSON report (B13). -> 0"""
+    from collections import defaultdict
+    with open(report) as f:
+        d = json.load(f)
+    acc = getattr(pcb.cfg(), "DRC_ACCEPTED", {}) or {}
+    per = defaultdict(lambda: {"types": defaultdict(int), "min": None})
+    other = []
+    for v in d["violations"]:
+        if v["severity"] != "error" or v["type"] in acc:
+            continue
+        descs = [i["description"] for i in v["items"]]
+        refs = sorted({m.group(3) for m in (PAD.match(x) for x in descs) if m})
+        m = ACTUAL.search(v["description"])
+        act = float(m.group(1)) if m else (0.0 if v["type"] in ("shorting_items", "solder_mask_bridge") else None)
+        if not refs:
+            other.append(f"{v['type']}: {v['description']}: " + " / ".join(descs))
+            continue
+        for r in refs:
+            e = per[r]
+            e["types"][v["type"]] += 1
+            if act is not None and (e["min"] is None or act < e["min"]):
+                e["min"] = act
+    tot = defaultdict(int)
+    for r in sorted(per, key=lambda r: (re.sub(r"\d+", "", r), int(re.sub(r"\D", "", r) or 0))):
+        e = per[r]
+        for t, n in e["types"].items():
+            tot[t] += n
+        ts = ", ".join(f"{n} {t}" for t, n in sorted(e["types"].items()))
+        print(f"drc: by refdes: {r:7s} {ts}" + (f"; smallest {e['min']:.4f} mm" if e["min"] is not None else ""))
+    for o in other:
+        print("drc: by refdes: other: " + o)
+    print(f"drc: by refdes: {len(per)} parts with pad conflicts ({', '.join(f'{n} {t}' for t, n in sorted(tot.items()))} "
+          f"attributions), {len(other)} other errors, {len(d.get('unconnected_items', []))} unconnected, "
+          f"{len(d.get('schematic_parity', []))} parity (types in DRC_ACCEPTED left out)")
+    return 0
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "--by-refdes":
+        if len(argv) > 2:
+            sys.exit(__doc__)
+        report = argv[1] if len(argv) == 2 else os.path.join(pcb.reports_dir(), "drc.json")
+        if not os.path.exists(report):
+            sys.exit(f"drc: {report} not found (run p2k drc first)")
+        return by_refdes(report)
     accepted = getattr(pcb.cfg(), "DRC_ACCEPTED", {})
     report = os.path.join(pcb.reports_dir(), "drc.json")
     cli = os.path.join(board.BIN, "kicad-cli")
