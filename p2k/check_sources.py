@@ -10,7 +10,9 @@
     equal);
   * the outline gerber spans the OUTLINE_RECT of p2k_config.py;
   * SMD_FREE_PADS (optional): those SMD free pads are matched with the SMDPad flashes of their
-    side only (no OtherPad / OtherDrill flash), and all of them must be in the IPC table.
+    side only (no OtherPad / OtherDrill flash), and all of them must be in the IPC table;
+  * BGA_REFDES (optional, a refdes or a set): the BGAPad flashes of every copper layer are exactly
+    the IPC pads of those parts on that layer's side (1:1 within TOL; e.g. the balls of an FPGA).
 
 Config keys: CADCAM, COPPER, DRILL_PLATED, DRILL_NONPLATED (None: no unplated drill file),
 OUTLINE, OUTLINE_RECT; HOLES_PLATED (ipc356) says which drill file has the mounting holes.
@@ -80,6 +82,14 @@ def main():
             errors.append(f"SMD_FREE_PADS: {len(smd_free)} of {len(sf)} found as SMD pads without a part in the IPC table")
         summary.append(f"{len(smd_free)} SMD pads without a part (SMD_FREE_PADS) matched as SMD pads only")
 
+    bga = getattr(CFG, "BGA_REFDES", None)
+    bga = {bga} if isinstance(bga, str) else set(bga or ())
+    if bga:
+        unknown = bga - {p["refdes"] for p in pads}
+        if unknown:
+            errors.append(f"BGA_REFDES: {sorted(unknown)} not in the IPC table")
+        nbga = 0
+
     for name, layer, _user in CFG.COPPER:
         side = SIDE.get(layer)
         g = gerber.parse(path(name))
@@ -90,11 +100,27 @@ def main():
         match(fn("OtherPad"), by_kind("free_pad", "hole"), f"{name} OtherPad", errors)
         smd = [p for p in pads if not p["is_tht"] and p["side"] == side]
         match(fn("SMDPad") + fn("BGAPad"), smd, f"{name} SMDPad", errors)   # BGAPad,CuDef = an SMD pad (BGA ball)
+        if bga:
+            # the BGAPad flashes are exactly the balls of BGA_REFDES (the SMD match above takes any SMD record)
+            left = [p for p in pads if p["refdes"] in bga and p["side"] == side]
+            what = "/".join(sorted(bga))
+            for f in fn("BGAPad"):
+                hit = [p for p in left if abs(p["x_mm"] - f.x) <= TOL and abs(p["y_mm"] - f.y) <= TOL]
+                if hit:
+                    left.remove(hit[0])
+                    nbga += 1
+                else:
+                    errors.append(f"{name}: BGAPad flash at ({f.x:.3f}, {f.y:.3f}) is not a {what} ball")
+            for p in left:
+                errors.append(f"{name}: {p['refdes']}-{p['pin']} has no BGAPad flash")
         other = [f for f in fl if not f.ap.function.startswith(("ViaPad", "ComponentPad", "OtherPad", "SMDPad", "BGAPad"))]
         if other:
             errors.append(f"{name}: {len(other)} flashes of unexpected function")
         summary.append(f"{name}: " + ", ".join(f"{k} {v}" for k, v in sorted(
             Counter(type(o).__name__ + ":" + (o.ap.function if hasattr(o, "ap") else "-") for o in g.objects).items())))
+
+    if bga:
+        summary.append(f"{nbga} BGAPad flashes = the balls of {' '.join(sorted(bga))} (BGA_REFDES)")
 
     g = gerber.parse(path(CFG.DRILL_PLATED))
     fl = [o for o in g.objects if isinstance(o, gerber.Flash)]

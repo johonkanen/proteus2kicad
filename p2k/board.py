@@ -58,12 +58,14 @@ def config():
 # a check adds its id here and to README.md; a board names the ids it wants in STRICT_CHECKS.
 STRICT_IDS = frozenset({
     "no_connect_pin_type",   # check_symbols (S7)
-    "nc_joined",             # compare_netlists (C2); ipc356_diff later (R4)
+    "nc_joined",             # compare_netlists (C2), ipc356_diff (R4)
     "net_names",             # compare_netlists (C4)
     "derive_max_move",       # footprints (F3)
     "pad_extent",            # check_footprints (CF2)
     "hole_refdes",           # build_pcb (B1)
     "track_nets",            # check_board (B10)
+    "roundtrip_pad_match",   # gerber_roundtrip (R5)
+    "roundtrip_counts",      # gerber_roundtrip (R7)
 })
 
 
@@ -91,9 +93,8 @@ def strict(check_id):
     return check_id in strict_checks()
 
 
-# Tools that read PENDING (B9); ipc356_diff and gerber_roundtrip follow in a later batch, so an
-# entry for them fails instead of being ignored.
-PENDING_TOOLS = frozenset({"drc", "assign_nets", "erc"})
+# Tools that read PENDING (B9); an entry for any other tool fails instead of being ignored.
+PENDING_TOOLS = frozenset({"drc", "assign_nets", "erc", "ipc356_diff", "gerber_roundtrip"})
 
 
 def pending(tool):

@@ -23,6 +23,20 @@ the #00xxx and sheet-local nets); a Proteus N/C pad (or one without a net) must 
 unconnected-(...) net or N/C; holes have no net; free pads and vias are on the mapped net.
 Unmatched records on either side are errors. Pad sizes are only summarised.
 
+Optional keys (each without effect when absent):
+  SPLIT_PIN_MERGES   the Proteus side keeps its two nets per listed pin, so the board (one net)
+                     gives exactly one "KiCad net K spans Proteus nets [kept, merged]" per pin:
+                     accepted exactly for the listed pairs (each must occur once, both pad records
+                     of the pin on that KiCad net), printed as "accepted (SPLIT_PIN_MERGES)";
+  SMD_FREE_PADS      the KiCad SMD free-pad records must be exactly one per listed position, 327
+                     (SMD), top side, no drill;
+  DRILL_SMALLER      the (reason, pads) form: the smaller drills of that pair must be exactly
+                     those pads (p2k.pcb.drill_smaller_pad_errors);
+  PHASE4_EXPECTED    {count: n} of proteus, kicad, matched, pads, nc, nonet, vias, stacked, holes,
+                     free, nets: the summary counts must be these;
+  PENDING            {"ipc356_diff": {pattern: question}}: errors waiting for a user decision;
+  STRICT_CHECKS      "nc_joined": every unconnected-(...) net of the export has exactly one record.
+
 Config keys: PROJECT, COPPER (layer count), DRILL_SMALLER, STACKED_VIAS, REMOVED_VIAS, FREE_PAD_PREFIX.
 Board wrapper hooks: main(argv, added={refdes: {"pins": {pin: net}}}, extra_vias=[(x, y,
 net), ...]) for parts and vias of a later design revision that have no Proteus record; the
@@ -113,6 +127,17 @@ def parse_kicad(path, copper_layers, free_pad_prefix):
 
 def kicad_unconnected(net):
     return net == "N/C" or net.startswith("unconnected-(")
+
+
+PHASE4_KEYS = ("proteus", "kicad", "matched", "pads", "nc", "nonet", "vias", "stacked", "holes", "free", "nets")
+
+
+def _legacy_split_pin_wrapper():
+    """True when a board wrapper from before batch 8 judges the SPLIT_PIN_MERGES spans itself (the
+    control card's tools/phase4_wrap.py reads the "spans" errors from this tool's output): the
+    shared acceptance then steps aside, so the board keeps working until its migration."""
+    m = sys.modules.get("__main__")
+    return m is not None and hasattr(m, "SPANS") and hasattr(m, "MERGES")
 
 
 def main(argv=None, added=None, extra_vias=None):
@@ -210,9 +235,27 @@ def main(argv=None, added=None, extra_vias=None):
     for n, ks in sorted(fwd.items()):
         if len(ks) > 1:
             errors.append(f"Proteus net {n} spans KiCad nets {sorted(ks)}")
+    merges = {} if _legacy_split_pin_wrapper() else bc.split_pin_merges()
+    want_pairs = {frozenset(v): k for k, v in merges.items()}
+    split_accepted = {}   # pair -> KiCad net
     for k, ns in sorted(back.items()):
         if len(ns) > 1:
-            errors.append(f"KiCad net {k} spans Proteus nets {sorted(ns)}")
+            pair = frozenset(ns)
+            if pair in want_pairs and pair not in split_accepted:
+                split_accepted[pair] = k
+            else:
+                errors.append(f"KiCad net {k} spans Proteus nets {sorted(ns)}")
+    for pair, (ref, pin) in sorted(want_pairs.items(), key=lambda kv: kv[1]):
+        kept, merged = merges[(ref, pin)]
+        if pair not in split_accepted:
+            errors.append(f"SPLIT_PIN_MERGES {ref}-{pin}: no KiCad net joins Proteus nets {kept} and {merged} "
+                          "(the board does not merge them)")
+            continue
+        recs = [r for r in kic if r["kind"] == "pad" and r["refdes"] == ref[:6] and r["pin"] == pin]
+        knets = sorted({r["net"] for r in recs})
+        if len(recs) != 2 or knets != [split_accepted[pair]]:
+            errors.append(f"SPLIT_PIN_MERGES {ref}-{pin}: {len(recs)} KiCad pad records on nets {knets} "
+                          f"(want 2 on {split_accepted[pair]})")
     mapping = {n: next(iter(ks)) for n, ks in fwd.items() if len(ks) == 1}
     for r, want in addrecs:   # added pads / vias: on the listed net
         if mapping.get(want, want) != r["net"]:
@@ -227,6 +270,7 @@ def main(argv=None, added=None, extra_vias=None):
     size_diff = Counter()
     drill_larger = Counter()
     drill_smaller_seen = Counter()
+    drill_smaller_pads = {}   # DRILL_SMALLER key -> {(refdes, pin)} (pad-set form, R3)
     for p, r in pairs + stacked:
         what = f"{p['kind']} {p['refdes']}-{p['pin']}" if p["kind"] == "pad" else f"{p['kind']} at ({p['x_mm']}, {p['y_mm']})"
         stats[p["kind"]] += 1
@@ -239,6 +283,8 @@ def main(argv=None, added=None, extra_vias=None):
         if r["drill"] < p["drill"] - DRILL_TOL:
             if bc.drill_smaller_accepted(p["drill"], r["drill"], DRILL_TOL):
                 drill_smaller_seen[(p["drill"], round(r["drill"], 3))] += 1
+                drill_smaller_pads.setdefault(bc.drill_smaller_entry(p["drill"], r["drill"], DRILL_TOL), set()).add(
+                    (p["refdes"], p["pin"]) if p["kind"] == "pad" else ("", f"{p['kind']} at ({p['x_mm']}, {p['y_mm']})"))
             else:
                 errors.append(f"{what}: drill Proteus {p['drill']}, KiCad {r['drill']:.4f} is smaller")
         elif r["drill"] > p["drill"] + DRILL_TOL:
@@ -263,6 +309,46 @@ def main(argv=None, added=None, extra_vias=None):
             if dw and dr:
                 size_diff[re.sub(r"\d+$", "", p["refdes"]) or p["refdes"]] += 1
 
+    errors += bc.drill_smaller_pad_errors(drill_smaller_pads, prot, DRILL_TOL)
+
+    # SMD_FREE_PADS (B4): KiCad's board-only SMD pad records, one per listed position
+    sf = bc.smd_free_pads()
+    smd_free = []
+    if sf:
+        smd_free = [r for r in kic if r["kind"] == "free_pad"
+                    and (not r["is_tht"] or any(math.hypot(x - r["x_mm"], y - r["y_mm"]) < TOL for x, y in sf))]
+        for r in smd_free:
+            at = [xy for xy in sf if math.hypot(xy[0] - r["x_mm"], xy[1] - r["y_mm"]) < TOL]
+            if r["is_tht"] or r["drill"] or r["side"] != "top" or len(at) != 1:
+                errors.append(f"SMD_FREE_PADS: KiCad {r['refdes']}-{r['pin']} at ({r['x_mm']:.3f}, {r['y_mm']:.3f}): "
+                              f"THT {r['is_tht']}, drill {r['drill']}, side {r['side']}, {len(at)} listed positions "
+                              "(want SMD, no drill, top, 1)")
+        if len(smd_free) != len(sf):
+            errors.append(f"SMD_FREE_PADS: {len(smd_free)} KiCad SMD free-pad records, {len(sf)} listed")
+
+    # strict nc_joined (R4): a Proteus N/C pad may sit on any unconnected-(...) net; two joined N/C
+    # pads would share one
+    unc = {}
+    for r in kic:
+        if r["net"].startswith("unconnected-("):
+            unc.setdefault(r["net"], []).append(f"{r['refdes']}-{r['pin']}")
+    if _board.strict("nc_joined"):
+        for net, pads in sorted(unc.items()):
+            if len(pads) != 1:
+                errors.append(f"KiCad net {net} joins {len(pads)} pads ({' '.join(pads)}): N/C pads wired together")
+
+    counts = dict(proteus=len(prot), kicad=len(kic), matched=len(pairs) + len(stacked), pads=stats["pad"],
+                  nc=stats["N/C pads"], nonet=stats["no-net pads"], vias=stats["via"], stacked=len(stacked),
+                  holes=stats["hole"], free=stats["free_pad"], nets=len(mapping))
+    expected = getattr(cfg, "PHASE4_EXPECTED", None)
+    if expected is not None:
+        unknown = set(expected) - set(PHASE4_KEYS)
+        if unknown:
+            raise SystemExit(f"ipc356_diff: PHASE4_EXPECTED: unknown key(s) {sorted(unknown)} (known: {', '.join(PHASE4_KEYS)})")
+        diff = {k: (counts[k], v) for k, v in expected.items() if counts[k] != v}
+        if diff:
+            errors.append("PHASE4_EXPECTED: " + ", ".join(f"{k} {a} (recorded {b})" for k, (a, b) in diff.items()))
+
     extra = f", {stats['free_pad']} free pads" if stats["free_pad"] else ""
     st = f" ({len(stacked)} stacked duplicate via records on matched vias)" if stacked else ""
     nonet = f" and {stats['no-net pads']} without a net" if stats["no-net pads"] else ""
@@ -285,6 +371,30 @@ def main(argv=None, added=None, extra_vias=None):
     if size_diff:
         print("ipc356_diff: pads with another size in KiCad (info): " +
               ", ".join(f"{k} {n}" for k, n in sorted(size_diff.items())))
+    for pair, k in sorted(split_accepted.items(), key=lambda kv: kv[1]):
+        print(f"ipc356_diff: accepted (SPLIT_PIN_MERGES): KiCad net {k} spans Proteus nets {sorted(pair)}")
+    if sf:
+        print(f"ipc356_diff: {len(smd_free)} SMD free-pad records (SMD_FREE_PADS): 327, top side, no drill, "
+              f"one per listed position")
+    if _board.strict("nc_joined"):
+        print(f"ipc356_diff: {len(unc)} unconnected-(...) nets, one record each (nc_joined)")
+    if expected is not None and not any(e.startswith("PHASE4_EXPECTED") for e in errors):
+        print(f"ipc356_diff: counts as recorded (PHASE4_EXPECTED: {len(expected)} counts)")
+    pending = _board.pending("ipc356_diff")
+    if pending:
+        rest, questions, stale = _board.judge_pending("ipc356_diff", errors)
+        for e in stale:
+            print("ipc356_diff: ERROR " + e)
+        for e in rest[:50]:
+            print("ipc356_diff: ERROR " + e)
+        if len(rest) > 50:
+            print(f"ipc356_diff: ... {len(rest) - 50} more")
+        ok = not rest and not stale
+        if ok:
+            for q in questions:
+                print("ipc356_diff: PENDING USER DECISION: " + q)
+        print("ipc356_diff: " + ("OK" if ok else "FAILED"))
+        return 0 if ok else 1
     for e in errors[:50]:
         print("ipc356_diff: ERROR " + e)
     if len(errors) > 50:

@@ -44,6 +44,16 @@ STACKED_VIAS (expected stacked duplicate via records, default 0), DRILL_EXCELLON
 the recorded copper deviations NONCONDUCTOR_LAYERS, REMOVED_TRACKS, REMOVED_VIAS (p2k.pcb): those
 Proteus objects (NonConductor draws moved off copper, removed tracks, removed via pads and via
 drills) are dropped from the Proteus side before the comparison and counted in the report.
+Optional keys of batch 8 (each without effect when absent): DRILL_SMALLER (reason, pads) form = the
+smaller drills of that pair must be exactly those pads; EXCELLON_MISSING = {(x, y, drill): reason}
+drill gerber flashes expected to be missing from DRILL_EXCELLON (each entry exactly one, 0.01 mm;
+EXCELLON_MISSING_LABELS = dict(file=, items=, source=) words of its report lines); PENDING =
+{"gerber_roundtrip": {pattern: question}} failures waiting for a user decision ("other: <layer>
+...", "missing: <layer> ...", "drill: <error>", "pad match: ...", "counts: ..."); STRICT_CHECKS
+"roundtrip_pad_match" (every pad of one set overlaps a pad of the other, per overlapping group the
+pad areas within ROUNDTRIP pad_area_tol and the centroids within tol) and "roundtrip_counts" (per
+layer the KiCad Conductor draws = the Proteus draws gerber_to_tracks builds, KiCad flashes = Proteus
+flashes after the recorded deviations). BGAPad (BGA balls) counts as a pad function.
 Board wrapper hooks: main(argv, in_area=fn(layer, x, y) -> bool, extra_vias=[(x, y, net,
 note), ...]) for intentional deviations of a later design revision.
 
@@ -77,10 +87,14 @@ DEFAULTS = dict(
     min_area=0.01,      # mm^2, clusters below this are only counted
     overlay_res=0.1,    # mm per pixel of the overlay PNGs
     drill_tol=0.005,    # mm, drill diameter tolerance (KiCad plots drills with 1 um, Proteus 0.1 um)
+    pad_area_tol=0.25,  # relative pad copper area difference per pad group (strict roundtrip_pad_match)
 )
 # Pad flashes of either plotter: Proteus ComponentPad / SMDPad,CuDef / OtherPad,Unknown; KiCad
 # ComponentPad / SMDPad,CuDef / WasherPad (copper ring of an unplated hole).
 PAD_FUNCTIONS = ("ComponentPad", "SMDPad", "OtherPad", "WasherPad")
+# Proteus BGAPad,CuDef (BGA balls) is a pad too (B3). Kept out of PAD_FUNCTIONS so a board wrapper from
+# before batch 8 that adds it there itself (and asserts it is missing) keeps working.
+PAD_FUNCTIONS_EXTRA = ("BGAPad",)
 
 
 class Settings:
@@ -93,6 +107,7 @@ class Settings:
         self.min_area = rt["min_area"]
         self.overlay_res = rt["overlay_res"]
         self.drill_tol = rt["drill_tol"]
+        self.pad_area_tol = rt["pad_area_tol"]
         self.clearance = cfg.PCB_RULES["clearance"]
         self.zone_min_width = cfg.PCB_RULES["min_track"]
         self.layers = [(g, k) for g, k, _ in bc.copper()]
@@ -110,7 +125,8 @@ S = None  # Settings, set in main()
 
 def is_pad(o):
     if isinstance(o, gerber.Flash):
-        return (o.ap.function or "").split(",")[0] in PAD_FUNCTIONS
+        fn = (o.ap.function or "").split(",")[0]
+        return fn in PAD_FUNCTIONS or fn in PAD_FUNCTIONS_EXTRA
     return isinstance(o, gerber.Region) and "P" in o.attrs   # KiCad custom pad shape
 
 
@@ -395,6 +411,7 @@ def compare_layer(layer, gp, gk, bbox, ipc_pads, ipc_vias, report, footprints, i
                              pad=f"{pad_label(pad)} {dp:.2f} mm" if pad else "-",
                              via=f"via ({via['net']}) {dv:.2f} mm" if via else "-"))
     clusters.sort(key=lambda c: -c["area"])
+    strict_pads = pad_match(layer, Ppads, Kpads, canvas, ipc_pads) if _board.strict("roundtrip_pad_match") else None
     by_cat = Counter()
     area_cat = Counter()
     for c in clusters:
@@ -405,7 +422,8 @@ def compare_layer(layer, gp, gk, bbox, ipc_pads, ipc_vias, report, footprints, i
                 copper_P=int(P.sum()) * px_area, copper_K=int(K.sum()) * px_area,
                 xor=int(xor.sum()) * px_area, onlyP=int(onlyP.sum()) * px_area, onlyK=int(onlyK.sum()) * px_area,
                 clusters=len(clusters), small=sum(1 for c in clusters if c["area"] < min_area),
-                by_cat=by_cat, area_cat=area_cat, other=[c for c in clusters if c["cat"] == "other" and c["area"] >= min_area])
+                by_cat=by_cat, area_cat=area_cat, other=[c for c in clusters if c["cat"] == "other" and c["area"] >= min_area],
+                pad_match=strict_pads)
     report.append(f"== {layer}: Proteus copper {summ['copper_P']:.1f} mm^2, KiCad copper {summ['copper_K']:.1f} mm^2")
     report.append(f"   raw XOR {summ['xor']:.2f} mm^2; after {tol} mm tolerance: only Proteus {summ['onlyP']:.2f} mm^2, "
                   f"only KiCad {summ['onlyK']:.2f} mm^2, {len(clusters)} clusters ({summ['small']} below {min_area} mm^2)")
@@ -447,6 +465,94 @@ def compare_layer(layer, gp, gk, bbox, ipc_pads, ipc_vias, report, footprints, i
 
 
 CATEGORIES = ("pad shape", "clearance", "zone fill", "deviation", "other")
+
+
+def pad_match(layer, Ppads, Kpads, canvas, ipc_pads):
+    """Strict roundtrip_pad_match (R5): the pad flashes of both sets as connected raster groups
+    (Proteus and KiCad pad components joined when they overlap). Every group must have pad copper of
+    both sets, its two pad areas within pad_area_tol (relative to the larger) and its two centroids
+    within tol. A missing, extra, resized or shifted pad otherwise ends in the "pad shape" mask (the
+    pad XOR), which explains it away. -> (errors, number of groups)"""
+    lp, n_p = ndimage.label(Ppads, structure=np.ones((3, 3)))
+    lk, n_k = ndimage.label(Kpads, structure=np.ones((3, 3)))
+    parent = list(range(n_p + n_k + 1))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    both = (lp > 0) & (lk > 0)
+    for a, b in np.unique(np.stack([lp[both], lk[both]], axis=1), axis=0) if both.any() else []:
+        ra, rb = find(int(a)), find(n_p + int(b))
+        if ra != rb:
+            parent[ra] = rb
+    area_p = np.bincount(lp.ravel(), minlength=n_p + 1)
+    area_k = np.bincount(lk.ravel(), minlength=n_k + 1)
+    rows = np.arange(lp.shape[0])[:, None]
+    cols = np.arange(lp.shape[1])[None, :]
+
+    def sums(lab, n):
+        r = np.bincount(lab.ravel(), weights=np.broadcast_to(rows, lab.shape).ravel(), minlength=n + 1)
+        c = np.bincount(lab.ravel(), weights=np.broadcast_to(cols, lab.shape).ravel(), minlength=n + 1)
+        return r, c
+
+    rp, cp = sums(lp, n_p)
+    rk, ck = sums(lk, n_k)
+    groups = {}
+    for i in range(1, n_p + 1):
+        g = groups.setdefault(find(i), [0, 0.0, 0.0, 0, 0.0, 0.0])
+        g[0] += area_p[i]; g[1] += rp[i]; g[2] += cp[i]
+    for j in range(1, n_k + 1):
+        g = groups.setdefault(find(n_p + j), [0, 0.0, 0.0, 0, 0.0, 0.0])
+        g[3] += area_k[j]; g[4] += rk[j]; g[5] += ck[j]
+    px = S.res * S.res
+    errors = []
+    for g in groups.values():
+        ap_, ak = g[0], g[3]
+        r, c = (g[1] + g[4]) / (ap_ + ak), (g[2] + g[5]) / (ap_ + ak)
+        x, y = canvas.mm(c + 0.5, r + 0.5)
+        pad, dp = nearest(ipc_pads, x, y)
+        near = f"near {pad_label(pad)} {dp:.2f} mm" if pad else "no IPC pad near"
+        at = f"{layer} pad at ({x:.3f}, {y:.3f}) {near}"
+        if not ak or not ap_:
+            errors.append(f"pad match: {at}: only {'Proteus' if ap_ else 'KiCad'} pad copper "
+                          f"{(ap_ or ak) * px:.3f} mm^2, no pad of the other set")
+            continue
+        if abs(ap_ - ak) > S.pad_area_tol * max(ap_, ak):
+            errors.append(f"pad match: {at}: pad area Proteus {ap_ * px:.3f} mm^2, KiCad {ak * px:.3f} mm^2 "
+                          f"(more than {S.pad_area_tol:.0%} apart)")
+        xp, yp = canvas.mm(g[2] / ap_ + 0.5, g[1] / ap_ + 0.5)
+        xk, yk = canvas.mm(g[5] / ak + 0.5, g[4] / ak + 0.5)
+        if math.hypot(xp - xk, yp - yk) > S.tol:
+            errors.append(f"pad match: {at}: pad centroid Proteus ({xp:.3f}, {yp:.3f}), KiCad ({xk:.3f}, {yk:.3f}), "
+                          f"{math.hypot(xp - xk, yp - yk):.3f} mm apart")
+    return errors, len(groups)
+
+
+def flash_count(g):
+    """Flashes of a gerber, identical flashes (same aperture, position within 0.001 mm) once: Proteus
+    writes a stacked via record twice, KiCad plots one via."""
+    return len({(o.ap.dcode, round(o.x, 3), round(o.y, 3))
+                for o in g.objects if isinstance(o, gerber.Flash)})
+
+
+def count_check(pname, klayer, user, gp, gk):
+    """Strict roundtrip_counts (R7): KiCad Conductor draws = the Proteus draws gerber_to_tracks
+    builds as tracks (pour edge strokes and REMOVED_TRACKS left out), KiCad flashes = Proteus flashes
+    (after the recorded deviations). The area XOR cannot see a short track that lies inside two pads
+    (a dog-bone stub between a BGA ball and its via). -> (errors, (tracks, kicad draws, P flashes, K flashes))"""
+    from . import gerber_to_tracks as g2t
+    want = len(g2t.load_layer(pname, klayer, user).tracks)
+    kd = sum(1 for o in gk.objects if isinstance(o, gerber.Draw) and (o.ap.function or "").startswith("Conductor"))
+    pf, kf = flash_count(gp), flash_count(gk)
+    errors = []
+    if kd != want:
+        errors.append(f"counts: {klayer}: {kd} KiCad track draws, gerber_to_tracks builds {want} from the Proteus draws")
+    if kf != pf:
+        errors.append(f"counts: {klayer}: {kf} KiCad flashes, Proteus {pf}")
+    return errors, (want, kd, pf, kf)
 
 
 def overlay(layer, arrays):
@@ -509,6 +615,11 @@ def match_drills(P, K, what, report, extra_vias=()):
         if dk < d - dtol:
             if bc.drill_smaller_accepted(d, dk, dtol):
                 smaller[(d, dk)] += 1
+                rec, dr = nearest(_DRILLED, x, y)
+                pad = ((rec["refdes"], rec["pin"]) if rec["kind"] == "pad" and rec["refdes"]
+                       else ("", f"{rec['kind']} at ({rec['x_mm']}, {rec['y_mm']})")) if rec and dr <= tol \
+                    else ("", f"drill at ({x}, {y})")
+                _SMALLER_SEEN.setdefault(bc.drill_smaller_entry(d, dk, dtol), set()).add(pad)
             else:
                 errors.append(f"{what}: drill at ({x}, {y}): Proteus {d} mm, KiCad {dk} mm is smaller")
     nextra = 0
@@ -538,9 +649,13 @@ def match_drills(P, K, what, report, extra_vias=()):
 
 
 def parse_excellon(path):
-    """[(x, y, diameter)] of a metric Excellon file (M48 header with TnnCd.ddd, body Tnn and
-    X..Y.. in 4.3 with explicit sign, as Proteus writes it)."""
+    """[(x, y, diameter mm)] of an Excellon file. Header: `METRIC` or `INCH` (optionally `,TZ` /
+    `,LZ`), `;FILE_FORMAT=i:d`, tools TnnC<diameter in the file unit>; body Tnn and X..Y.. with
+    an explicit or implied sign. Coordinates without a decimal point have d implied decimals (default
+    3 metric, 4 inch, as Proteus writes them: metric 4.3 / inch 2.4); with `LZ` (leading zeros kept)
+    a shorter number is padded on the right to i + d digits. No unit line = metric (as before)."""
     tools, out, cur, header = {}, [], None, True
+    scale, idig, ddig, lz = 1.0, None, None, False
     for raw in open(path):
         line = raw.strip()
         if not line:
@@ -548,24 +663,50 @@ def parse_excellon(path):
         if line in ("%", "M95"):
             header = False
             continue
+        if header:
+            m = re.fullmatch(r"(METRIC|INCH)(?:,(TZ|LZ))?(?:,.*)?", line)
+            if m:
+                scale = 25.4 if m[1] == "INCH" else 1.0
+                lz = m[2] == "LZ"
+                continue
+            m = re.search(r"FILE_FORMAT=(\d+):(\d+)", line)
+            if m:
+                idig, ddig = int(m[1]), int(m[2])
+                continue
         m = re.fullmatch(r"T(\d+)C([\d.]+)", line)
         if m and header:
-            tools[int(m[1])] = float(m[2])
+            tools[int(m[1])] = float(m[2]) * scale
             continue
         m = re.fullmatch(r"T(\d+)", line)
         if m:
             cur = tools.get(int(m[1]))
             continue
-        m = re.fullmatch(r"X([+-]?\d+)Y([+-]?\d+)", line)
+        m = re.fullmatch(r"X([+-]?[\d.]+)Y([+-]?[\d.]+)", line)
         if m:
             if cur is None:
                 raise ValueError(f"{path}: coordinate before a tool selection: {line}")
-            out.append((int(m[1]) / 1000.0, int(m[2]) / 1000.0, cur))
+            dec = ddig if ddig is not None else (4 if scale != 1.0 else 3)
+            ndig = (idig if idig is not None else (2 if scale != 1.0 else 3)) + dec
+
+            def num(t):
+                if "." in t:
+                    return float(t) * scale
+                sign = -1 if t.startswith("-") else 1
+                digits = t.lstrip("+-")
+                if lz:
+                    digits = digits.ljust(ndig, "0")
+                v = sign * int(digits) / 10 ** dec
+                return v * scale if scale != 1.0 else v
+
+            out.append((num(m[1]), num(m[2]), cur))
     return out
 
 
 def compare_excellon(gerber_drills, report):
-    """The Excellon file of another Proteus export vs the drill gerber flashes, 1:1."""
+    """The Excellon file of another Proteus export vs the drill gerber flashes, 1:1.
+    EXCELLON_MISSING ({(x, y, drill): reason}, optional): drill gerber flashes known to be missing
+    from that file (e.g. vias added after the export); each entry must match exactly one "not in the
+    Excellon file" mismatch (0.01 mm, drill_tol), which is then reported as expected instead."""
     path = _board.path(S.excellon)
     E = parse_excellon(path)
     errors = []
@@ -584,17 +725,54 @@ def compare_excellon(gerber_drills, report):
         diam_pairs[(d, dg)] += 1
         if abs(dg - d) > S.drill_tol:
             errors.append(f"excellon: {d} mm at ({x}, {y}): drill gerber {dg} mm")
+    missing = []
     for i in np.nonzero(~used)[0]:
         x, y, d, fn = gerber_drills[i]
+        missing.append((x, y, d, fn, len(errors)))
         errors.append(f"excellon: drill gerber {fn} {d} mm at ({x}, {y}) not in the Excellon file")
     report.append(f"== excellon ({os.path.basename(path)}): {len(E)} holes vs {len(gerber_drills)} drill gerber flashes, "
                   f"{int(used.sum())} matched within {S.tol} mm, {len(errors)} mismatches")
     for (d, dg), n in sorted(diam_pairs.items()):
         report.append(f"   {n:4d} x Excellon {d:.4f} mm = gerber {dg:.4f} mm" + ("" if abs(d - dg) <= S.drill_tol else "  DIFFERS"))
-    return errors
+    expected = getattr(bc.cfg(), "EXCELLON_MISSING", None)
+    if expected is None:
+        return errors
+    words = dict(file="Excellon file", items="expected drills", source="EXCELLON_MISSING")
+    words.update(getattr(bc.cfg(), "EXCELLON_MISSING_LABELS", {}) or {})
+    unknown = set(words) - {"file", "items", "source"}
+    if unknown:
+        raise SystemExit(f"roundtrip: EXCELLON_MISSING_LABELS: unknown key(s) {sorted(unknown)} (file, items, source)")
+    drop, found, rest = set(), {}, []
+    for key in expected:
+        ex, ey, ed = key
+        hit = [m for m in missing if m[4] not in drop and abs(m[2] - ed) <= S.drill_tol
+               and math.hypot(m[0] - ex, m[1] - ey) < 0.01]
+        if hit:
+            drop.add(hit[0][4])
+            found[key] = hit[0][3]
+    rest = [e for i, e in enumerate(errors) if i not in drop]
+    for key, why in expected.items():
+        x, y, d = key
+        if key in found:
+            report.append(f"   expected, not an error: drill gerber {found[key]} {d} mm at ({x}, {y}) not in the "
+                          f"{words['file']}: {why}")
+        else:
+            rest.append(f"excellon: EXCELLON_MISSING {d} mm at ({x}, {y}) was expected to be missing from the Excellon "
+                        "file, but it is not reported missing")
+    report.append(f"   {len(found)} of {len(expected)} {words['items']} missing from the Excellon file "
+                  f"({words['source']}), {len(rest)} other mismatches")
+    return rest
+
+
+_DRILLED = []        # IPC records with a drill (DRILL_SMALLER pad sets, R3), set by compare_drills
+_SMALLER_SEEN = {}   # DRILL_SMALLER key -> {(refdes, pin)} accepted smaller drills
 
 
 def compare_drills(kdir, report, extra_vias):
+    global _DRILLED, _SMALLER_SEEN
+    recs = bc.ipc_records(merge=False)
+    _DRILLED = [p for p in recs if p["drill"]]
+    _SMALLER_SEEN = {}
     errors = []
     P_raw = flashes(bc.gerber_path(S.drill_plated))
     P_pl = [d for d in P_raw if not (d[3] == "ViaDrill" and bc.removed_via(d[0], d[1]))]
@@ -612,6 +790,7 @@ def compare_drills(kdir, report, extra_vias):
         smaller.update(sm2)
     if stacked != S.stacked_vias:
         errors.append(f"{stacked} stacked duplicate Proteus drill records, STACKED_VIAS = {S.stacked_vias}")
+    errors += bc.drill_smaller_pad_errors(_SMALLER_SEEN, recs, S.drill_tol)
     if S.excellon:
         errors += compare_excellon(P_raw + P_np, report)
     for e in errors:
@@ -652,6 +831,9 @@ def main(argv=None, in_area=None, extra_vias=None):
                   f"board outline {bbox[0]} .. {bbox[2]} x {bbox[1]} .. {bbox[3]} mm", ""]
         summaries = []
         recorded = {}
+        strict_counts = _board.strict("roundtrip_counts")
+        users = {k: u for _, k, u in bc.copper()}
+        count_errors, count_seen = [], {}
         for pname, klayer in S.layers:
             gp = gerber.parse(bc.gerber_path(pname))
             dropped = apply_recorded(klayer, gp)
@@ -660,6 +842,9 @@ def main(argv=None, in_area=None, extra_vias=None):
                               + ", ".join(f"{v} {k}" for k, v in sorted(dropped.items())))
                 recorded[klayer] = dropped
             gk = gerber.parse(kicad_layer_file(kdir, klayer))
+            if strict_counts:
+                e, count_seen[klayer] = count_check(pname, klayer, users[klayer], gp, gk)
+                count_errors += e
             summ, arrays = compare_layer(klayer, gp, gk, bbox, ipc_pads[klayer], ipc_vias, report, footprints, in_area)
             overlay(klayer, arrays)
             summaries.append(summ)
@@ -669,6 +854,11 @@ def main(argv=None, in_area=None, extra_vias=None):
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
     rel_out = os.path.relpath(S.out, bc.root())
+    pad_errors = [e for s in summaries for e in (s["pad_match"][0] if s["pad_match"] else [])]
+    strict_errors = pad_errors + count_errors
+    if strict_errors:   # failures only: a passing strict check adds nothing to the committed report
+        report.append("== strict checks (STRICT_CHECKS)")
+        report += ["   ERROR " + e for e in strict_errors]
     with open(os.path.join(S.out, "roundtrip.txt"), "w") as f:
         f.write("\n".join(report) + "\n")
     other = sum(len(s["other"]) for s in summaries)
@@ -697,9 +887,38 @@ def main(argv=None, in_area=None, extra_vias=None):
     print(f"roundtrip: drills {len(drill_errors)} mismatches{extra}; report {rel_out}/roundtrip.txt, overlays {rel_out}/*.png")
     for e in drill_errors:
         print("roundtrip: ERROR " + e)
-    ok = other == 0 and missing == 0 and not drill_errors
+    if _board.strict("roundtrip_pad_match"):
+        n = sum(s["pad_match"][1] for s in summaries)
+        print(f"roundtrip: pad match (roundtrip_pad_match): {n} pad groups on {len(summaries)} layers, "
+              + ("each with both sets' pads, areas within "
+                 f"{S.pad_area_tol:.0%}, centroids within {S.tol} mm" if not pad_errors else f"{len(pad_errors)} errors"))
+    if strict_counts:
+        print("roundtrip: counts (roundtrip_counts): KiCad track draws / flashes per layer "
+              + ", ".join(f"{k} {v[1]} / {v[3]}" for k, v in count_seen.items())
+              + (": tracks as gerber_to_tracks builds them, flashes = Proteus" if not count_errors else ": FAILED"))
+    for e in strict_errors:
+        print("roundtrip: ERROR " + e)
+    failures = ([f"other: {s['layer']} only {c['side']} {c['area']:.3f} mm^2 at ({c['x']:.3f}, {c['y']:.3f}) near {c['pad']}"
+                 for s in summaries for c in s["other"]]
+                + [f"missing: {s['layer']} {who} {m[0]} {m[4]} {m[3]} mm at ({m[1]:.3f}, {m[2]:.3f})"
+                   for s in summaries for who, key in (("Proteus", "miss_P"), ("KiCad", "miss_K")) for m in s[key]]
+                + ["drill: " + e for e in drill_errors] + strict_errors)
+    if _board.pending("gerber_roundtrip"):
+        rest, questions, stale = _board.judge_pending("gerber_roundtrip", failures)
+        for e in stale:
+            print("roundtrip: ERROR " + e)
+        for r in rest:
+            print("roundtrip: not pending: " + r[:300])
+        ok = not rest and not stale
+        if ok:
+            for q in questions:
+                print("roundtrip: PENDING USER DECISION: " + q)
+        print("roundtrip: " + ("OK" if ok else f"FAILED ({len(rest)} failures not pending, {len(stale)} stale PENDING entries)"))
+        return 0 if ok or not args.check else 1
+    ok = other == 0 and missing == 0 and not drill_errors and not strict_errors
     print("roundtrip: " + ("OK" if ok else f"FAILED ({other} unexplained clusters, {missing} draws/flashes without copper "
-                                            f"in the other set, {len(drill_errors)} drill mismatches)"))
+                                            f"in the other set, {len(drill_errors)} drill mismatches"
+                                            + (f", {len(strict_errors)} strict check errors" if strict_errors else "") + ")"))
     return 0 if ok or not args.check else 1
 
 

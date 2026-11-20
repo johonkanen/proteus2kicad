@@ -208,15 +208,63 @@ def export_netlist():
     return comps, nets
 
 
-def drill_smaller_accepted(d_proteus, d_kicad, tol=0.005):
-    """Reason from the DRILL_SMALLER config key ({(proteus_mm, kicad_mm): reason}) when a KiCad
-    drill smaller than the Proteus drill is an accepted (recorded, reversible) decision; None
-    otherwise. Both diameters are matched within tol (file roundings: 1.0668 / 1.066, KiCad's
-    IPC-D-356 0.0001 inch quantum 1.5011 / 1.5)."""
-    for (a, b), why in (getattr(cfg(), "DRILL_SMALLER", {}) or {}).items():
+def _drill_smaller():
+    return getattr(cfg(), "DRILL_SMALLER", {}) or {}
+
+
+def drill_smaller_entry(d_proteus, d_kicad, tol=0.005):
+    """The DRILL_SMALLER key (proteus_mm, kicad_mm) matching a drill pair within tol, or None."""
+    for (a, b) in _drill_smaller():
         if abs(a - d_proteus) <= tol and abs(b - d_kicad) <= tol:
-            return why
+            return (a, b)
     return None
+
+
+def drill_smaller_accepted(d_proteus, d_kicad, tol=0.005):
+    """Reason from the DRILL_SMALLER config key ({(proteus_mm, kicad_mm): reason or (reason,
+    pads)}) when a KiCad drill smaller than the Proteus drill is an accepted (recorded,
+    reversible) decision; None otherwise. Both diameters are matched within tol (file roundings:
+    1.0668 / 1.066, KiCad's IPC-D-356 0.0001 inch quantum 1.5011 / 1.5)."""
+    key = drill_smaller_entry(d_proteus, d_kicad, tol)
+    if key is None:
+        return None
+    why = _drill_smaller()[key]
+    return why[0] if isinstance(why, tuple) else why
+
+
+def drill_smaller_pad_errors(seen, recs, tol=0.005):
+    """R3: the pad-set form of DRILL_SMALLER, {(proteus_mm, kicad_mm): (reason, pads)} with pads a
+    set of (refdes, pin) or refdes (= every drilled IPC pad of that refdes with the entry's Proteus
+    drill). seen = {entry key: {(refdes, pin)}}: the pads at which a tool accepted a smaller drill
+    under that entry (a via / hole / free pad as ("", "<kind> at (x, y)")). For every pad-set entry
+    the accepted pads must equal the listed pads, both ways (so the entry is used, and no other pad
+    of the pair passes). Plain `reason` entries keep the pair-only matching. -> [error]"""
+    errors = []
+    for key, val in sorted(_drill_smaller().items()):
+        if not isinstance(val, tuple):
+            continue
+        if len(val) != 2 or isinstance(val[1], str):
+            raise SystemExit(f"p2k: DRILL_SMALLER {key}: value must be a reason or (reason, pads), got {val!r}")
+        want = set()
+        for item in val[1]:
+            if isinstance(item, str):
+                hit = {(p["refdes"], p["pin"]) for p in recs if p["kind"] == "pad" and p["refdes"] == item
+                       and p["drill"] and abs(p["drill"] - key[0]) <= tol}
+                if not hit:
+                    errors.append(f"DRILL_SMALLER {key}: refdes {item} has no drilled IPC pad of {key[0]} mm")
+                want |= hit
+            else:
+                ref, pin = item
+                if not any(p["kind"] == "pad" and p["refdes"] == ref and p["pin"] == pin for p in recs):
+                    errors.append(f"DRILL_SMALLER {key}: pad {ref}-{pin} is not an IPC pad")
+                want.add((ref, pin))
+        got = seen.get(key, set())
+        for ref, pin in sorted(got - want):
+            errors.append(f"DRILL_SMALLER {key}: {ref + '-' + pin if ref else pin}: KiCad drill smaller, "
+                          "not in the entry's pad set")
+        for ref, pin in sorted(want - got):
+            errors.append(f"DRILL_SMALLER {key}: listed pad {ref}-{pin} has no smaller KiCad drill of this pair")
+    return errors
 
 
 # ---------------------------------------------------------------- recorded copper deviations
