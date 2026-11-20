@@ -118,7 +118,11 @@ def export_netlist():
             excluded="exclude_from_board" in props, dnp="dnp" in props)
     nets = {}
     for n in xml.iter("net"):
-        nets[n.get("name")] = [(nd.get("ref"), nd.get("pin")) for nd in n.findall("node")]
+        name = n.get("name")
+        if name.startswith("unconnected-(") and name.endswith(")") and "/" in name:
+            # the board file writes "/" in these names as {slash}: keep the DRC parity equal
+            name = "unconnected-(" + name[len("unconnected-("):-1].replace("/", "{slash}") + ")"
+        nets[name] = [(nd.get("ref"), nd.get("pin")) for nd in n.findall("node")]
     return comps, nets
 
 
@@ -142,14 +146,32 @@ def nonconductor_layer(klayer):
     return (getattr(cfg(), "NONCONDUCTOR_LAYERS", {}) or {}).get(klayer, klayer)
 
 
+def removed_track_count(value):
+    """(reason, count) of a REMOVED_TRACKS value: "reason" (exactly one draw) or (reason, n)."""
+    if isinstance(value, tuple):
+        why, n = value
+        if not isinstance(n, int) or n < 1:
+            raise SystemExit(f"REMOVED_TRACKS: count must be an integer >= 1, got {value!r}")
+        return why, n
+    return value, 1
+
+
 def removed_track(klayer, x1, y1, x2, y2, tol=0.001):
     """(key, reason) when the Conductor draw is listed in REMOVED_TRACKS ({(layer, x1, y1, x2, y2):
-    reason}, IPC frame, either direction) - Proteus copper deliberately not built (e.g. dangling
-    stubs); None otherwise."""
-    for key, why in (getattr(cfg(), "REMOVED_TRACKS", {}) or {}).items():
-        lay, a1, b1, a2, b2 = key
-        if lay != klayer:
-            continue
+    reason or (reason, count)}, IPC frame) - Proteus copper deliberately not built (e.g. dangling
+    stubs); None otherwise. An entry in the drawn direction (within 1e-6 mm) is taken first, then
+    any entry in either direction (within tol), so a zero-length or back-and-forth draw and its
+    reverse can be listed as two entries. gerber_to_tracks requires each entry to match exactly
+    `count` draws (1 for the plain form)."""
+    entries = [(key, removed_track_count(v)[0]) for key, v in (getattr(cfg(), "REMOVED_TRACKS", {}) or {}).items()
+               if key[0] == klayer]
+    exact = 1e-6
+    for key, why in entries:
+        _, a1, b1, a2, b2 = key
+        if abs(a1 - x1) <= exact and abs(b1 - y1) <= exact and abs(a2 - x2) <= exact and abs(b2 - y2) <= exact:
+            return key, why
+    for key, why in entries:
+        _, a1, b1, a2, b2 = key
         for p, q in (((a1, b1), (a2, b2)), ((a2, b2), (a1, b1))):
             if abs(p[0] - x1) <= tol and abs(p[1] - y1) <= tol and abs(q[0] - x2) <= tol and abs(q[1] - y2) <= tol:
                 return key, why
@@ -166,6 +188,16 @@ def removed_via(x, y, tol=0.01):
     return None
 
 
+def hole_prefix():
+    """Refdes prefix of the board-only mounting-hole footprints (HOLE_PREFIX, default "H")."""
+    return getattr(cfg(), "HOLE_PREFIX", "H")
+
+
+def hole_start():
+    """Number of the first mounting hole (HOLE_START, default 1): holes are prefix + start, start + 1, ..."""
+    return getattr(cfg(), "HOLE_START", 1)
+
+
 def is_unconnected_net(name):
     """KiCad's per-pin nets of unconnected symbol pins (no-connect flags)."""
     return not name or name.startswith("unconnected-(")
@@ -180,6 +212,8 @@ def ipc_to_kicad_nets(board):
             ipc[(p["refdes"], p["pin"])] = p["net"]
     seen = {}
     for fp in board.GetFootprints():
+        if fp.IsBoardOnly():
+            continue   # mounting holes / free pads: never an IPC part pad (B1: a hole H4 next to a terminal H4)
         ref = fp.GetReference()
         for pad in fp.Pads():
             key = (ref, pad.GetNumber())

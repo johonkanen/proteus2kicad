@@ -78,8 +78,8 @@ def main():
         match(fn("ComponentPad"), tht_pads, f"{name} ComponentPad", errors)
         match(fn("OtherPad"), by_kind("free_pad", "hole"), f"{name} OtherPad", errors)
         smd = [p for p in pads if not p["is_tht"] and p["side"] == side]
-        match(fn("SMDPad"), smd, f"{name} SMDPad", errors)
-        other = [f for f in fl if not f.ap.function.startswith(("ViaPad", "ComponentPad", "OtherPad", "SMDPad"))]
+        match(fn("SMDPad") + fn("BGAPad"), smd, f"{name} SMDPad", errors)   # BGAPad,CuDef = an SMD pad (BGA ball)
+        other = [f for f in fl if not f.ap.function.startswith(("ViaPad", "ComponentPad", "OtherPad", "SMDPad", "BGAPad"))]
         if other:
             errors.append(f"{name}: {len(other)} flashes of unexpected function")
         summary.append(f"{name}: " + ", ".join(f"{k} {v}" for k, v in sorted(

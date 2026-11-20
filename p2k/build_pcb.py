@@ -12,7 +12,8 @@ There is no headless "Update PCB from schematic", so this does it in Python:
   - copper layers (COPPER), board outline on Edge.Cuts from the OUTLINE gerber (Proteus origin
     kept, KiCad y = -IPC y), drill/grid origin at the Proteus origin;
   - the IPC 'hole' records (mounting holes, no net) as board-only footprints HOLE_FOOTPRINT
-    named H1..; the IPC 'free_pad' records (plated pads with a net but no part) as board-only
+    named HOLE_PREFIX + HOLE_START.. (default H1..; a hole refdes equal to a schematic refdes
+    prints a WARNING, an error under STRICT_CHECKS "hole_refdes"); the IPC 'free_pad' records (plated pads with a net but no part) as board-only
     footprints FREE_PAD_FOOTPRINT named FREE_PAD_PREFIX1.., pad 1 on the IPC net;
   - the User layers of COPPER named Proteus.<layer>.Pours (gerber_to_tracks fills them);
   - board thickness PCB_THICKNESS and the design rules PCB_RULES.
@@ -33,6 +34,7 @@ import sys
 import pcbnew
 
 from . import gerber, pcb
+from .board import strict as board_strict
 from .footprints import footprint_path
 
 
@@ -184,8 +186,19 @@ def main():
 
     recs = pcb.ipc_records()
     holes = [p for p in recs if p["kind"] == "hole"]
+    prefix, start = pcb.hole_prefix(), pcb.hole_start()
+    hole_refs = []
     for i, h in enumerate(sorted(holes, key=lambda p: (-p["y_mm"], p["x_mm"])), 1):
-        board_only(board, c.HOLE_FOOTPRINT, f"H{i}", c.HOLE_VALUE, h["x_mm"], h["y_mm"])
+        hole_refs.append(f"{prefix}{start - 1 + i}")
+        board_only(board, c.HOLE_FOOTPRINT, hole_refs[-1], c.HOLE_VALUE, h["x_mm"], h["y_mm"])
+    clash = sorted(set(hole_refs) & set(comps))
+    if clash:
+        msg = (f"mounting hole refdes equal schematic refdes: {' '.join(clash)} "
+               f"(set HOLE_START / HOLE_PREFIX)")
+        if board_strict("hole_refdes"):
+            errors.append(msg)
+        else:
+            print("build_pcb: WARNING " + msg)
 
     free = [p for p in recs if p["kind"] == "free_pad"]
     if free:

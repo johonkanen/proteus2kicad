@@ -13,7 +13,10 @@ Applied fix-ups (tables in the board's p2k_config.py):
   * Proteus refdes that KiCad cannot use (spaces, leading +/-) are renamed (KICAD_REFDES);
     the `refdes` column holds the KiCad name, `refdes_proteus` the full Proteus name,
     `refdes_raw` the 6-char IPC field;
-  * Proteus power-net names are aliased (NET_ALIASES).
+  * Proteus power-net names are aliased (NET_ALIASES);
+  * pin ids are renamed per refdes (IPC_PIN_IDS = {KiCad refdes: {Proteus pin: KiCad pad}}, e.g.
+    a header with odd / even rows swapped in Proteus): every file in reference/ and every check
+    that reads it sees the KiCad pad numbers; the copper is unchanged (see pin_ids()).
 
 Records with a blank refdes: `via` (net, drill in VIA_DRILLS), `free_pad` (net, other drill,
 e.g. wire pads) and `hole` (no net; HOLE_DRILLS / HOLES_PLATED checked).
@@ -145,6 +148,33 @@ def parse(path):
     if unused:
         raise ValueError(f"TRUNCATED_REFDES entries not found in IPC: {sorted(unused)}")
     return net_names, pads
+
+
+def pin_ids(pads):
+    """Rename the pin ids of the refdes in IPC_PIN_IDS ({KiCad refdes: {Proteus pin: KiCad pad}}),
+    e.g. a header whose odd / even rows Proteus numbers swapped, or a relay with the
+    manufacturer's pin numbers. Positions, nets and every other field stay as Proteus wrote them.
+    Fails unless every listed refdes exists, its IPC pins equal the listed Proteus pins (every pad
+    renamed, only those) and the targets are unique."""
+    rename = getattr(CFG, "IPC_PIN_IDS", {}) or {}
+    errors = []
+    for ref, ren in rename.items():
+        mine = [p for p in pads if p["kind"] == "pad" and p["refdes"] == ref]
+        if not mine:
+            errors.append(f"IPC_PIN_IDS: refdes {ref} not in the IPC file")
+        pins = {p["pin"] for p in mine}
+        if pins != set(ren):
+            errors.append(f"IPC_PIN_IDS[{ref}]: IPC pins {sorted(pins)}, listed {sorted(ren)}")
+        if len(set(ren.values())) != len(ren):
+            errors.append(f"IPC_PIN_IDS[{ref}]: target pin ids not unique")
+        for p in mine:
+            p["pin"] = ren.get(p["pin"], p["pin"])
+    if errors:
+        raise SystemExit("ipc356: " + "; ".join(errors))
+    return rename
+
+
+_PARSE = parse
 
 
 def stats(net_names, pads):
@@ -335,12 +365,17 @@ def main():
     args = ap.parse_args()
 
     net_names, pads = parse(args.ipc)
+    # IPC_PIN_IDS: applied here, once, before anything is checked or written; a board wrapper that
+    # replaced parse() with its own renaming (tube_pi_fxloop tools/ipc356.py) has done it already
+    renamed = pin_ids(pads) if parse is _PARSE else {}
     if args.check:
         st, errors = self_check(net_names, pads, args.out)
         print("ipc356: " + ", ".join(f"{k}={v}" for k, v in st.items()))
         for e in errors:
             print("  FAIL " + e)
         print("ipc356: " + ("FAIL" if errors else "OK"))
+        if renamed and not errors:
+            print_renamed(renamed)
         return 1 if errors else 0
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -349,7 +384,14 @@ def main():
     st = stats(net_names, pads)
     print("ipc356: " + ", ".join(f"{k}={v}" for k, v in st.items()))
     print(f"wrote {len(outputs(net_names, pads))} files to {args.out}")
+    if renamed:
+        print_renamed(renamed)
     return 0
+
+
+def print_renamed(rename):
+    print("ipc356: pin ids renamed (IPC_PIN_IDS): " + "; ".join(
+        f"{r} " + " ".join(f"{a}->{b}" for a, b in ren.items()) for r, ren in rename.items()))
 
 
 if __name__ == "__main__":

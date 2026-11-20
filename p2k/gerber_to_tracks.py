@@ -121,7 +121,7 @@ def load_layer(gname, layer, user):
             cl.vias.append((f.x, f.y, f.ap.params[0]))
         elif fn.startswith("OtherPad"):
             cl.other_pads.append(f)
-        elif fn in ("ComponentPad", "SMDPad,CuDef"):
+        elif fn in ("ComponentPad", "SMDPad,CuDef", "BGAPad,CuDef"):
             cl.pads.append(f)
         else:
             raise ValueError(f"{gname}: unexpected flash function {fn}")
@@ -226,9 +226,16 @@ def main():
     found = {bc.removed_via(p["x_mm"], p["y_mm"])[0] for p in removed_vias}
     if want - found:
         errors.append(f"REMOVED_VIAS entries without an IPC via record: {sorted(want - found)}")
-    want = set(getattr(bc.cfg(), "REMOVED_TRACKS", {}) or {})
+    rt = getattr(bc.cfg(), "REMOVED_TRACKS", {}) or {}
+    want = set(rt)
     found = [k for cl in layers for k in cl.removed]
-    if want - set(found) or len(found) != len(set(found)):
+    counts = {k: bc.removed_track_count(v)[1] for k, v in rt.items()}
+    if any(c > 1 for c in counts.values()):
+        got = Counter(found)
+        bad = [f"{k}: {got[k]} draws, expected {n}" for k, n in sorted(counts.items()) if got[k] != n]
+        if bad:
+            errors.append(f"REMOVED_TRACKS: {len(want)} listed, {len(found)} draws matched; " + "; ".join(bad))
+    elif want - set(found) or len(found) != len(set(found)):
         errors.append(f"REMOVED_TRACKS: {len(want)} listed, found {len(found)} draws "
                       f"(missing {sorted(want - set(found))})")
 

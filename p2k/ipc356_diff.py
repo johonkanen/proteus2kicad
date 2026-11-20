@@ -96,7 +96,7 @@ def parse_kicad(path, copper_layers, free_pad_prefix):
         h = int(m["h"]) * scale if m["h"] else 0.0
         if refdes == "VIA":
             kind = "via"
-        elif op == "367" or (net == "N/C" and re.fullmatch(r"H\d+", refdes)):
+        elif op == "367" or (net == "N/C" and re.fullmatch(re.escape(bc.hole_prefix()) + r"\d+", refdes)):
             kind = "hole"      # unplated tooling hole, or a plated board-only mounting hole H<n>
         elif free_re and free_re.fullmatch(refdes):
             kind = "free_pad"

@@ -62,6 +62,7 @@ STRICT_IDS = frozenset({
     "net_names",             # compare_netlists (C4)
     "derive_max_move",       # footprints (F3)
     "pad_extent",            # check_footprints (CF2)
+    "hole_refdes",           # build_pcb (B1)
 })
 
 
