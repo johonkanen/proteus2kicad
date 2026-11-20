@@ -56,7 +56,11 @@ def config():
 
 # Ids of the implemented opt-in stricter checks (CANDIDATES.md section 2). Each batch that adds
 # a check adds its id here and to README.md; a board names the ids it wants in STRICT_CHECKS.
-STRICT_IDS = frozenset()
+STRICT_IDS = frozenset({
+    "no_connect_pin_type",   # check_symbols (S7)
+    "nc_joined",             # compare_netlists (C2); ipc356_diff later (R4)
+    "net_names",             # compare_netlists (C4)
+})
 
 
 def strict_checks():

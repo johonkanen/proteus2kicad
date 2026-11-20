@@ -17,6 +17,13 @@ warning while the IPC net still has pins on parts that are not drawn yet), pins
 connected in KiCad that are N/C in Proteus (and vice versa), missing/extra pins,
 extra parts, and missing parts unless --allow-missing.
 Parts whose symbol is excluded from the board (e.g. an off-board transformer) are ignored.
+
+Multi-unit parts drawn on several sheets: with a `units` column in lib/part_map.csv
+("A:2 B:5 ...", unit letter : PDF page), the pins of a unit that is not drawn are pending
+(warnings) when its page is outside --sheet or with --allow-missing, as missing parts are.
+Strict checks (STRICT_CHECKS): `nc_joined` - an unconnected-(...) net with more than one pin
+fails (no-connect pins wired together pass otherwise: each is counted as a lone N/C pin);
+`net_names` - a "name hint" (a named KiCad net equal to an IPC net of another name) fails.
 """
 import argparse
 import json
@@ -30,6 +37,7 @@ from collections import Counter, defaultdict
 
 from . import board
 from .check_symbols import library_symbols, read_part_map
+from .sexpr import find, find_all, load
 
 NC, NONET = "N/C", "(no net)"
 
@@ -99,11 +107,55 @@ def short_name(name):
     return name.rsplit("/", 1)[-1] if name else name
 
 
-def compare(comps, k_pin_net, ipc_pin_net, part_map, sheet=None, allow_missing=False):
+def unit_pages(part_map):
+    """{(refdes, pin): (unit letter, page)} from the optional part-map column `units`
+    ("A:2 B:5 ..."), the units of the symbol's sub-symbols (NAME_<unit>_<style>, unit 1 = A;
+    pins of unit 0 belong to every unit and get no page). {} without the column."""
+    rows = [r for r in part_map if (r.get("units") or "").strip()]
+    if not rows:
+        return {}
+    lib = load(board.path("lib", f"{board.config().PROJECT}.kicad_sym"))
+    syms = {s[1]: s for s in find_all(lib, "symbol")}
+    out = {}
+    for row in rows:
+        pages = {}
+        for tok in row["units"].split():
+            u, _, pg = tok.partition(":")
+            pages[u] = int(pg)
+        name = row["lib_id"].partition(":")[2]
+        sym = syms.get(name)
+        if sym is None:
+            continue
+        for sub in find_all(sym, "symbol"):
+            unit = int(sub[1][len(name) + 1:].split("_")[0])
+            if unit == 0:
+                continue
+            letter = chr(ord("A") + unit - 1)
+            for pin in find_all(sub, "pin"):
+                if letter in pages:
+                    out[(row["refdes"], find(pin, "number")[1])] = (letter, pages[letter])
+    return out
+
+
+def compare(comps, k_pin_net, ipc_pin_net, part_map, sheet=None, allow_missing=False, nc_joined=False,
+            net_names=False, units=None):
+    """nc_joined: an unconnected-(...) net with more than one pin is an error (strict check
+    nc_joined); net_names: a name hint is an error (strict check net_names); units: unit_pages()
+    (pins of units on undrawn sheets are pending, like missing parts)."""
     errors, warnings, info = [], [], []
+    units = units or {}
     ipc_refs = {r for r, _ in ipc_pin_net}
     excluded = {r for r, c in comps.items() if c["excluded"]}
     k_refs = {r for r in comps if not r.startswith("#") and r not in excluded}
+    if nc_joined:
+        joined = defaultdict(list)
+        for rp, n in k_pin_net.items():
+            if unconnected(n):
+                joined[n].append(rp)
+        for n in sorted(joined, key=natkey):
+            if len(joined[n]) > 1:
+                errors.append(f"KiCad net {n} joins {len(joined[n])} pins: {fmt(joined[n])} "
+                              "(no-connect pins wired together; strict check nc_joined)")
     k_pin_net = {rp: n for rp, n in k_pin_net.items() if rp[0] in k_refs}
     sheet_of = {row["refdes"]: int(row["sheet"]) for row in part_map}
 
@@ -124,6 +176,9 @@ def compare(comps, k_pin_net, ipc_pin_net, part_map, sheet=None, allow_missing=F
     for rp in sorted(ipc_pins - k_pins, key=pinkey):
         if ipc_pin_net[rp] in (NC, NONET):
             info.append(f"pin {rp[0]}-{rp[1]} ({ipc_pin_net[rp]} in IPC) not in KiCad netlist (unplaced unit?)")
+        elif rp in units and (allow_missing or (sheet is not None and units[rp][1] != sheet)):
+            warnings.append(f"pending pin {rp[0]}-{rp[1]} (IPC net {ipc_pin_net[rp]}): unit {units[rp][0]} "
+                            f"on sheet {units[rp][1]} not drawn")
         else:
             errors.append(f"missing pin {rp[0]}-{rp[1]} (IPC net {ipc_pin_net[rp]}; unit not placed?)")
     for rp in sorted(k_pins - ipc_pins, key=pinkey):
@@ -175,7 +230,9 @@ def compare(comps, k_pin_net, ipc_pin_net, part_map, sheet=None, allow_missing=F
         # A split may still be joined by a sheet that is not drawn yet (e.g. G2_SOURCE_LO
         # meets PGND on sheet 1): a warning while the IPC net has pins on undrawn parts.
         pending = sorted({sheet_of.get(rp[0], 0) for rp in ipc_pin_net
-                          if ipc_group(rp) == ig and rp[0] not in present})
+                          if ipc_group(rp) == ig and rp[0] not in present}
+                         | {units[rp][1] for rp in ipc_pin_net
+                            if ipc_group(rp) == ig and rp in units and rp[0] in present and rp not in k_pins})
         if pending:
             warnings.append(f"IPC net {ig[0]} split (pending sheets {' '.join(map(str, pending))}) "
                             "over KiCad nets " + " ".join(parts))
@@ -206,7 +263,10 @@ def compare(comps, k_pin_net, ipc_pin_net, part_map, sheet=None, allow_missing=F
         if not ig[0].startswith("#") and not kn.startswith(("Net-(", "unconnected-(")) \
                 and short_name(kn).upper() != ig[0].upper():
             hints += 1
-            warnings.append(f"name hint: KiCad net {kn} = IPC net {ig[0]} ({fmt(pins, 4)})")
+            if net_names:
+                errors.append(f"net name: KiCad net {kn} = IPC net {ig[0]} ({fmt(pins, 4)}; strict check net_names)")
+            else:
+                warnings.append(f"name hint: KiCad net {kn} = IPC net {ig[0]} ({fmt(pins, 4)})")
 
     complete = sum(1 for ig, pins in by_ipc.items() if len(pins) == ipc_size[ig])
     nc_pins = sum(1 for ig in by_ipc if ig[1] is not None)   # N/C and no-net pins: singleton groups
@@ -247,7 +307,9 @@ def main():
             export_netlist(args.schematic, out)
             comps, k_pin_net = load_kicad(out)
     part_map = read_part_map()
-    errors, warnings, info, st = compare(comps, k_pin_net, load_ipc(), part_map, args.sheet, args.allow_missing)
+    errors, warnings, info, st = compare(comps, k_pin_net, load_ipc(), part_map, args.sheet, args.allow_missing,
+                                         nc_joined=board.strict("nc_joined"), net_names=board.strict("net_names"),
+                                         units=unit_pages(part_map))
 
     k_refs = {r for r, c in comps.items() if not r.startswith("#") and not c["excluded"]}
     print(f"compare: parts {st['present']}/{st['ipc_parts']} present, {st['missing_in_scope']} missing"

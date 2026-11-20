@@ -10,8 +10,10 @@ The board script defines `build()` -> list of symbol nodes and calls `run(build)
 
 Pin numbers must equal the Proteus/IPC pin ids. `from_std` copies a KiCad 10 standard symbol
 (flattened, pins renumbered with `pins={old: new}`), `box` draws an IC box with the Proteus
-pin names, `header` lays out a dual-row connector, `power` makes a power symbol named after
-an IPC net. Writes lib/<PROJECT>.kicad_sym; `--check` fails if the file is out of date.
+pin names (`pin_length=`, `tb_margin=`), `multi_box` one box body per unit, `header` lays out
+a dual-row connector, `power` makes a power symbol named after an IPC net. `from_std` options:
+`pin_types={number or "*": type}` (e.g. valve pins passive), `units={new: old}` (unit
+renumbering), `hide_pin_names=True`. Writes lib/<PROJECT>.kicad_sym; `--check` fails if the file is out of date.
 Needs the KiCad AppImage mount for the standard libraries.
 """
 import copy
@@ -92,7 +94,53 @@ def remap_pins(sym, mapping, names=None):
     return sym
 
 
-def from_std(lib, name, new, ref, value=None, desc=None, pins=None, names=None):
+def set_pin_types(sym, types):
+    """Set the electrical type of pins: types = {pin number: type}, "*" = every other pin.
+    Every listed number must exist."""
+    seen = set()
+    for pin in walk(sym, "pin"):
+        num = find(pin, "number")[1]
+        if num in types:
+            pin[1] = Sym(types[num])
+            seen.add(num)
+        elif "*" in types:
+            pin[1] = Sym(types["*"])
+    missing = set(types) - {"*"} - seen
+    assert not missing, (sym[1], missing)
+    return sym
+
+
+def renumber_units(sym, units):
+    """units = {new unit: old unit}: sub-symbols NAME_<old>_<style> become NAME_<new>_<style>
+    (e.g. {1: 2, 2: 1} swaps units 1 and 2). The resulting unit numbers must be unique."""
+    name = sym[1]
+    old_to_new = {str(o): str(n) for n, o in units.items()}
+    present = set()
+    for sub in find_all(sym, "symbol"):
+        present.add(sub[1][len(name) + 1:].split("_")[0])
+    missing = set(old_to_new) - present
+    assert not missing, (name, "units", missing)
+    result = [old_to_new.get(u, u) for u in present]
+    assert len(set(result)) == len(result), (name, "units collide", units)
+    for sub in find_all(sym, "symbol"):
+        unit, style = sub[1][len(name) + 1:].split("_")
+        if unit in old_to_new:
+            sub[1] = f"{name}_{old_to_new[unit]}_{style}"
+    return sym
+
+
+def hide_pin_names(sym):
+    """Pin names stay in the symbol (netlist / ERC texts) but are not drawn."""
+    sym[:] = [c for c in sym if not (isinstance(c, list) and c and c[0] == "pin_names")]
+    sym.insert(2, [Sym("pin_names"), [Sym("offset"), 0], [Sym("hide"), Sym("yes")]])
+    return sym
+
+
+def from_std(lib, name, new, ref, value=None, desc=None, pins=None, names=None, pin_types=None, units=None,
+             hide_pin_names=False):
+    """A KiCad std symbol as `new`: pins={old: new number} (names={new number: name}),
+    pin_types={number or "*": electrical type} (after the renumbering), units={new: old} (unit
+    renumbering), hide_pin_names=True (names kept, not drawn)."""
     sym = rename(std_symbol(lib, name), new)
     if pins:
         remap_pins(sym, pins, names)
@@ -104,7 +152,16 @@ def from_std(lib, name, new, ref, value=None, desc=None, pins=None, names=None):
         set_prop(sym, "Description", desc)
     # drop sim models: pin numbers no longer match them
     sym[:] = [c for c in sym if not (isinstance(c, list) and c[0] == "property" and str(c[1]).startswith("Sim."))]
+    if pin_types:
+        set_pin_types(sym, pin_types)
+    if units:
+        renumber_units(sym, units)
+    if hide_pin_names:
+        _hide_pin_names(sym)
     return sym
+
+
+_hide_pin_names = hide_pin_names
 
 
 # ---------------------------------------------------------------- box symbols
@@ -130,8 +187,12 @@ def _pin(num, name, etype, x, y, rot, length=2.54, hidden_name=False):
 
 
 def box(name, ref, left, right, top=(), bottom=(), value=None, desc="", show_pin_names=True,
-        min_width=7.62, on_board=True):
-    """left/right/top/bottom: lists of (number, name, electrical_type); None = gap."""
+        min_width=7.62, on_board=True, pin_length=2.54, tb_margin=None):
+    """left/right/top/bottom: lists of (number, name, electrical_type); None = gap.
+    pin_length: mm (long pin numbers such as COM1 need 3.81 or 5.08; keep the pin ends on the
+    2.54 grid). tb_margin: extra body height (mm, beyond the one grid row) above the first /
+    below the last left-right pin row on a side that has top / bottom pins (default: room for
+    the longest top / bottom pin name inside the body, rounded up to the grid; 0 = none)."""
     g = 2.54
     def maxlen(plist):
         return max([len(p[1].replace("~{", "").replace("}", "")) for p in plist if p] + [0])
@@ -140,15 +201,18 @@ def box(name, ref, left, right, top=(), bottom=(), value=None, desc="", show_pin
     hw = -(-width / 2 // g) * g
     rows = max(len(left), len(right), 1)
     ytop = -(-(rows - 1) // 2) * g          # pins on the 2.54 grid, first row at ytop
-    pad = lambda plist: -(-(maxlen(plist) * 1.2 + 1.5) // g) * g if plist else 0
+    if tb_margin is None:
+        pad = lambda plist: -(-(maxlen(plist) * 1.2 + 1.5) // g) * g if plist else 0
+    else:
+        pad = lambda plist: tb_margin if plist else 0
     top_y, bot_y = ytop + g + pad(top), ytop - rows * g - pad(bottom)
     pins = []
     for side, plist in (("L", left), ("R", right)):
         for i, p in enumerate(plist):
             if not p:
                 continue
-            x = -hw - g if side == "L" else hw + g
-            pins.append(_pin(p[0], p[1], p[2], x, ytop - i * g, 0 if side == "L" else 180))
+            x = -hw - pin_length if side == "L" else hw + pin_length
+            pins.append(_pin(p[0], p[1], p[2], x, ytop - i * g, 0 if side == "L" else 180, length=pin_length))
     for side, plist in (("T", top), ("B", bottom)):
         n = len(plist)
         for i, p in enumerate(plist):
@@ -156,8 +220,8 @@ def box(name, ref, left, right, top=(), bottom=(), value=None, desc="", show_pin
                 continue
             x = (i - (n - 1) / 2) * g * 2
             x = round(x / g) * g
-            y = top_y + g if side == "T" else bot_y - g
-            pins.append(_pin(p[0], p[1], p[2], x, y, 270 if side == "T" else 90))
+            y = top_y + pin_length if side == "T" else bot_y - pin_length
+            pins.append(_pin(p[0], p[1], p[2], x, y, 270 if side == "T" else 90, length=pin_length))
     sym = [Sym("symbol"), name]
     if not show_pin_names:
         sym.append([Sym("pin_names"), [Sym("offset"), 1.016], [Sym("hide"), Sym("yes")]])
@@ -177,6 +241,27 @@ def box(name, ref, left, right, top=(), bottom=(), value=None, desc="", show_pin
             [Sym("symbol"), f"{name}_1_1", *pins],
             [Sym("embedded_fonts"), Sym("no")]]
     return sym
+
+
+def multi_box(name, ref, units, desc="", **kw):
+    """Multi-unit box symbol: units = [(left, right), ...]; unit k is the body of box(left, right)
+    (own rectangle). Reference above the tallest body, Value below the deepest one (fields are
+    per symbol, not per unit). kw: further box() options."""
+    bodies = [box(name, ref, left, right, **kw) for left, right in units]
+    sym = bodies[0]
+    subs = []
+    for k, b in enumerate(bodies, 1):
+        rect = find(next(s for s in find_all(b, "symbol") if s[1] == f"{name}_0_1"), "rectangle")
+        pins = find_all(next(s for s in find_all(b, "symbol") if s[1] == f"{name}_1_1"), "pin")
+        subs.append([Sym("symbol"), f"{name}_{k}_1", rect, *pins])
+    head = [c for c in sym if not (isinstance(c, list) and c[0] in ("symbol", "embedded_fonts"))]
+    set_prop(head, "Description", desc)
+    for key, pick in (("Reference", max), ("Value", min)):
+        best = pick((find(next(p for p in find_all(b, "property") if p[1] == key), "at") for b in bodies),
+                    key=lambda at: float(at[2]))
+        prop = next(p for p in find_all(head, "property") if p[1] == key)
+        prop[3] = list(best)
+    return head + subs + [[Sym("embedded_fonts"), Sym("no")]]
 
 
 def header(pins):

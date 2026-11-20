@@ -4,7 +4,10 @@
 For every refdes in lib/part_map.csv the set of pin numbers of its symbol
 (all units) must equal the set of IPC pin ids of that refdes. Also checks that
 every IPC refdes is mapped, every mapped symbol exists, off-board symbols are
-excluded from the board, and power symbol names are IPC net names.
+excluded from the board, and power symbol names are IPC net names. Strict check
+`no_connect_pin_type` (STRICT_CHECKS): no on-board part's symbol has a pin of electrical type
+no_connect (KiCad 10 keeps such a pin in its own unconnected-(...) net even when a wire joins
+it, so compare_netlists could not see the wire).
 
   p2k check_symbols
 
@@ -37,7 +40,8 @@ def library_symbols(path=None):
         pins = {find(p, "number")[1] for p in walk(sym, "pin")}
         ob = find(sym, "on_board")
         out[sym[1]] = {"pins": pins, "power": find(sym, "power") is not None,
-                       "on_board": not (ob and ob[1] == "no")}
+                       "on_board": not (ob and ob[1] == "no"),
+                       "no_connect": {find(p, "number")[1] for p in walk(sym, "pin") if str(p[1]) == "no_connect"}}
     return out
 
 
@@ -75,6 +79,10 @@ def main():
         if ref not in ipc:
             errors.append(f"{ref}: not in IPC (mark the symbol 'exclude from board' if it is off-board)")
             continue
+        if sym["no_connect"] and board.strict("no_connect_pin_type"):
+            errors.append(f"{ref} ({name}): pin(s) {sorted(sym['no_connect'])} of electrical type no_connect "
+                          "(a wired no_connect pin stays in its own unconnected-(...) net; use passive + a "
+                          "no-connect flag; strict check no_connect_pin_type)")
         if sym["pins"] != ipc[ref]:
             errors.append(f"{ref} ({name}): symbol-only pins {sorted(sym['pins'] - ipc[ref])}, "
                           f"IPC-only pins {sorted(ipc[ref] - sym['pins'])}")
