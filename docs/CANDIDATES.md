@@ -4,7 +4,8 @@ Status (2026-11-20): batch 0 (regression harness, baseline; c72d909), batch 1 (r
 batch 2 (Proteus project reader and part map; 0b7a294), batch 3 (symbols, netlist comparison, ERC;
 2686b4b), batch 4 (schematic drawing; 631e74b), batch 5 (footprints; fa46323), batch 6 (pin order and
 pad checks; 306c26e), batch 7a (PCB build chain fixes and holes; 6fc78ea), batch 7b (SMD test pads and
-split pins; bf39429) and batch 7c (DRC acceptance, pending decisions, track nets; 6018091) done;
+split pins; bf39429), batch 7c (DRC acceptance, pending decisions, track nets; 6018091), batch 8
+(Phase 4; 1f4e0ee) and batch 9 (measure_gaps, drc --by-refdes, make_pcb; d82ee9a) done;
 see "Status per entry" (section 5) and the regression record (section 6). Later sessions implement
 the rest batch by batch (section 3) and tick the entries off there. The prompt for the next
 session is at the end (section 7).
@@ -84,6 +85,14 @@ have no candidate list; tube_psu contributes code (`tools/measure_gaps.py`, `too
   identical), `reports/assign_nets.txt` (orphan order) and `reports/roundtrip/roundtrip.txt` ("3 Conductor
   draws (REMOVED_TRACKS)", Proteus 874 draws instead of 876) change. The migration session applies it in
   HV's migration commit and records it in HV's STATUS.md. No board commit in the p2k sessions.
+- **D-TC7b (TC split-pin tag re-baseline, user, 2026-11-20):** TC's batch-7b migration (its
+  `ipc356_check.py`, `check_sources.py`, `pcb_wrap.py`, the D1 part of `compare_netlists.py` and
+  `drc_check.py` replaced by the shared `SPLIT_PIN_MERGES` / `SMD_FREE_PADS` code) is an accepted,
+  reviewed re-baseline: the 14 lines of `reports/assign_nets.txt` change their tag from `accepted open
+  (D1, board-local)` to `accepted open (SPLIT_PIN_MERGES)`; everything else identical. The shared
+  wording stays. The migration session applies it in TC's migration commit (together with the
+  batch-8 Phase 4 part, which adds no further change; section 5 B5 / R4) and records it in TC's
+  STATUS.md. No board commit in the p2k sessions.
 
 ## 1. Deduplicated candidates
 
@@ -706,15 +715,18 @@ generators (`make_part_map.py`, `gen_symbols.py`, `tools/sheets/sheet*.py`, `gen
 | `truncated_nets_keys` | I1 | a `TRUNCATED_NETS` key matches no restored refdes |
 
 Implemented (registered in `board.STRICT_IDS`): `no_connect_pin_type`, `nc_joined` (compare_netlists part;
-the ipc356_diff part R4 comes with batch 8), `net_names` (batch 3, 2686b4b), `derive_max_move`, `pad_extent`
-(batch 5, fa46323), `hole_refdes` (batch 7a, 6fc78ea), `track_nets` (batch 7c, 6018091).
+the ipc356_diff part R4 since batch 8, 1f4e0ee), `net_names` (batch 3, 2686b4b), `derive_max_move`, `pad_extent`
+(batch 5, fa46323), `hole_refdes` (batch 7a, 6fc78ea), `track_nets` (batch 7c, 6018091), `roundtrip_pad_match`,
+`roundtrip_counts` (batch 8, 1f4e0ee). Only `truncated_nets_keys` (I1) is still planned.
 
 Keys whose presence is the opt-in (no strict id needed): `BOTTOM_THT`, `ERC_FATAL_WARNINGS`,
 `DRC_EXPECTED_WARNINGS`, `DRC_ACCEPTED_ITEMS`, `PENDING`, `EXCELLON_MISSING`, `SPLIT_PIN_MERGES`,
 `SMD_FREE_PADS`, `PROTEUS_PADS`, the pad-set form of `DRILL_SMALLER`; since batch 6 `PIN_ORDER`,
 `PIN_ORDER_BOTTOM`, `PIN_ORDER_MAX_MOVE` (check_pin_order) and `PROTEUS_PADS_CHECK` (check_pads): new
 tools that run only when a board calls them, so no strict id; since 7a `IPC_PIN_IDS`, `HOLE_START` /
-`HOLE_PREFIX` and the `(reason, n)` form of `REMOVED_TRACKS`; since 7c `ASSIGN_NETS_CHECK_REPORT`.
+`HOLE_PREFIX` and the `(reason, n)` form of `REMOVED_TRACKS`; since 7c `ASSIGN_NETS_CHECK_REPORT`; since 8
+`BGA_REFDES`, `PHASE4_EXPECTED`, `EXCELLON_MISSING` / `EXCELLON_MISSING_LABELS`, the `(reason, pads)` form of
+`DRILL_SMALLER`, `PENDING["ipc356_diff" | "gerber_roundtrip"]`; since 9 `PCB_STEPS` (new tool).
 
 ## 3. Implementation order
 
@@ -831,8 +843,8 @@ Batch 7 is split into three commits, each regression-tested.
   and `drc_check.py` deleted, `SPLIT_PIN_NETS` dropped, `check_all.sh` / `make_pcb.sh` on the shared tools:
   ALL CHECKS PASSED, the board file and every report identical **except 14 lines of
   `reports/assign_nets.txt`** whose tag changes from `accepted open (D1, board-local)` to `accepted open
-  (SPLIT_PIN_MERGES)` (rule 4 vs a shared text: a re-baseline of that tag only; needs the user's OK like
-  D-K2 / D-I7; see section 5 B5).
+  (SPLIT_PIN_MERGES)` (rule 4 vs a shared text: a re-baseline of that tag only; **accepted by the user,
+  decision D-TC7b**; see section 5 B5).
 
 **7c** (acceptance and pending)
 - Files: `drc.py` (B7, B8, B9), `assign_nets.py` (B6, B9), `check_board.py` (B10).
@@ -856,6 +868,18 @@ Batch 7 is split into three commits, each regression-tested.
   - TC `phase4_wrap.py` removed (strict ids `nc_joined`, `roundtrip_counts`, plus `PHASE4_EXPECTED`).
   - PA `phase4_checks.py` removed (no pending item left).
   - PA, PR, PF `excellon_metric.py` only if `roundtrip.txt` stays identical (R1).
+- **Done (1f4e0ee)**, plus the opt-in `BGA_REFDES` in check_sources (the control card's "BGAPad flashes are
+  exactly the U10 balls", lost when TC's `check_sources.py` goes). Migrations proven in scratch clones
+  (`tools/p2k` symlinked, full regenerate, `check_all.sh`, `git status`; section 5): **TC** (7b + 8 together:
+  `ipc356_check.py`, `check_sources.py`, `pcb_wrap.py`, `compare_netlists.py`, `drc_check.py`,
+  `phase4_wrap.py`, `check_drill_smaller.py` deleted; `BGA_REFDES = "U10"`, `STRICT_CHECKS = {"nc_joined",
+  "roundtrip_counts"}`, `PHASE4_EXPECTED` = its `EXPECT`, `DRILL_SMALLER` J8 pad set): ALL CHECKS PASSED, only
+  the 14 D-TC7b tag lines of `reports/assign_nets.txt` change; **PR** (`roundtrip.py` → `EXCELLON_MISSING` +
+  `EXCELLON_MISSING_LABELS`, `check_drill_smaller.py` → pad sets): identical; **PF** (`check_drill_smaller.py`
+  → pad sets): identical; **PA** (`phase4_checks.py` removed, C1-C6 pad set): identical. R1: dropping
+  `excellon_metric.py` (DRILL_EXCELLON = the inch source file) changes exactly one line of
+  `reports/roundtrip/roundtrip.txt`, the file name in `== excellon (…)` (PA, PR, PF proven; positions / diameters
+  equal within 0.001 mm): optional, a one-line re-baseline, or keep the converter.
 
 ### Batch 9: tools that come last
 
@@ -864,6 +888,15 @@ Batch 7 is split into three commits, each regression-tested.
 - Migration: `tools/measure_gaps.py` deleted in PSU, PA, PR, PF, HV, TC. `tools/make_pcb.sh` →
   `p2k make_pcb` with `PCB_STEPS` once a board has no board-local step left. The board file must
   be identical in both modes. Until then PA and PSU chain their `run()` steps with `&&` (B12).
+- **Done (d82ee9a).** `p2k.measure_gaps` (default = the boards' script, `--per-layer` = TC's), `p2k drc
+  --by-refdes [drc.json]` (TC `drc_pads.py`), `p2k make_pcb [--check]` (`PCB_STEPS`; default with
+  `pours_to_zones` when a Proteus copper gerber has a dark region; board scripts allowed as steps, so a board
+  can migrate before its last board-local step is gone). PA's template already returns on each failing step
+  (`|| return 1`), so the "PA unchained" note above is outdated (PSU is out of scope, D-REG). Proven in scratch
+  clones (section 5): every board's `tools/make_pcb.sh --check` and `p2k make_pcb --check` print the same
+  lines and pass, the in-place runs write the same files; full regenerate + `check_all.sh` with
+  `tools/make_pcb.sh` reduced to `exec tools/p2k/bin/p2k make_pcb "$@"` on PA, PF, TC: identical (TC: only the
+  D-TC7b lines).
 
 ### Batch 10: docs
 
@@ -957,16 +990,28 @@ All three were answered on 2026-11-20 (section "Decisions": D-R, D-Z, D-AC). Kep
 | CP1 `p2k.check_pads` | 6 | **done** (306c26e): HV's check (bbox ±0.01, area ± `CHECK_PADS_AREA_TOL` 0.06, drill ±0.005, pad flashes `ComponentPad` / `SMDPad` / `BGAPad`), parts `PROTEUS_PADS_CHECK` else `PROTEUS_PADS`. HV scratch: 13 parts, 130 pads, 334 pad layers OK, as `check_proteus_pads.py`. Negative (same counts as the board script): TO-220 drill 1.1 (12), long axis turned (48), J1 pad 2 square (4), C1 (KiCad pads) added (10), unknown refdes, neither key; `PROTEUS_PADS` fallback OK |
 | B1 `HOLE_PREFIX` / `HOLE_START`, strict `hole_refdes` | 7a | **done** (6fc78ea): build_pcb names, collision WARNING (stdout) / error under the id; ipc356_diff hole pattern from the prefix; `ipc_to_kicad_nets` skips board-only footprints. PR migration (`HOLE_START = 101`, `rename_holes.py` and its make_pcb step removed): board file and every report identical. Negative: PR without `HOLE_START` → WARNING H4 H5 and board not up to date; with the id → ERROR, make_pcb FAILED; `HOLE_START = 101` + id → identical; `HOLE_PREFIX = "MH"` board: ipc356_diff OK with the key, FAILED (holes unknown) without it |
 | B2 `{slash}` in unconnected names | 7a | **done** (6fc78ea), on by default (no finished board has such a name except TC through its wrapper; idempotent under the wrapper). TC scratch with `pcb_wrap.py` patch 4 dropped: board identical, DRC parity OK |
-| B3 `BGAPad` | 7a (roundtrip part: 8) | **done** in check_sources and gerber_to_tracks (6fc78ea). TC scratch with `pcb_wrap.py` patch 2 dropped: board identical. Shared `p2k check_sources` on TC: before, 225 "U10-… has no flash" errors plus the 4 SMD test pads (B4); now only the test pads (TC keeps its wrapper until 7b). `gerber_roundtrip.PAD_FUNCTIONS` not changed (TC `phase4_wrap.py` asserts it): batch 8 |
+| B3 `BGAPad` | 7a (roundtrip part: 8) | **done** in check_sources and gerber_to_tracks (6fc78ea). TC scratch with `pcb_wrap.py` patch 2 dropped: board identical. Shared `p2k check_sources` on TC: before, 225 "U10-… has no flash" errors plus the 4 SMD test pads (B4); now only the test pads (TC keeps its wrapper until 7b). `gerber_roundtrip.PAD_FUNCTIONS` not changed (TC `phase4_wrap.py` asserts it): batch 8. **Roundtrip part done (1f4e0ee)**: `BGAPad` counts as a pad through `PAD_FUNCTIONS_EXTRA` (outside `PAD_FUNCTIONS`, so TC's unmigrated assert-and-add wrapper keeps working; its round trip output is identical, TC's migrated round trip too) |
 | I6 `IPC_PIN_IDS` | 7a | **done** (6fc78ea): `ipc356.pin_ids()` called once in `main` (PF wrapper semantics and messages, plus PF's "pin ids renamed" stdout line); skipped when a board wrapper replaced `ipc356.parse`, so unmigrated PF (wrapper on top) is unchanged (regression). No `pin_proteus` field: `reference/` stays identical (a field can come later, only with the key). PF migration (`tools/ipc356.py` deleted, `check_all.sh` → `p2k ipc356 --check`): `reference/` and everything else identical, ALL CHECKS PASSED. Negative: unknown refdes, pin 8 not listed, target twice, extra pin 9 (each exit 1 with PF's message); key removed → reference/ stale. HV J1 / TC J11 renumbering = board design commits (D-PIN), not done here |
 | I7 `REMOVED_TRACKS` direction + count | 7a | **done** (6fc78ea): drawn-direction entry first (1e-6 mm), then either direction (0.001); `(reason, n)` = exactly n draws (`pcb.removed_track_count`); gerber_roundtrip uses the same matcher. Plain entries: old check and message unchanged. TC: `pcb_wrap.py` patch 5 dropped → board identical; also the GND out / back pair as one entry `(reason, 2)` → identical. HV: `REMOVED_DOT_TRACKS` → `("B.Cu", -32.85196, -11.53736, -32.85196, -11.53737): ("OUT1: …", 2)`, `remove_dot_tracks.py` and its step removed → **same copper but not byte-identical**: the board file's item order / UUIDs (sorted without UUIDs: identical), `reports/assign_nets.txt` (orphan order) and `roundtrip.txt` ("3 Conductor draws (REMOVED_TRACKS)", Proteus 874 draws instead of 876: the dot draws are now recorded deviations on both sides); HV's migration is a re-baseline (reviewed board commit; **accepted by the user, decision D-I7**). Negative: HV count 1 → "2 listed, found 3 draws", count 3 → "…: 2 draws, expected 3", count 0 → error; TC without the "(back)" entry → "25 listed, found 26 draws" |
-| B4 `SMD_FREE_PADS` | 7b (Phase 4 parts: 8) | **done** (bf39429): `pcb.smd_free_pads()` / `is_smd_free_pad()` (blank refdes, SMD, top, unplated, no drill, listed position and raw net). ipc356 `--check` accepts exactly those records (`accepted:` line, every entry found); check_sources leaves them out of the OtherPad / OtherDrill lists (they match SMD flashes of their side) and requires all of them; gerber_to_tracks `load_copper()` → `smd_free_flashes()` moves their top SMD flashes to the OtherPad list (one round flash of the IPC size per position on the top layer, none elsewhere; idempotent, so TC's `pcb_wrap.py` patch 3 on top still works, same order as the wrapper so the assign_nets groups are unchanged); check_board `check_smd_free()` (one board-only SMD pad, copper F.Cu only, IPC size, net) plus the record count in `main`. Records are told by their fields, not the kind, so TC's check_sources wrapper (kind `smd_test_pad`) keeps working. Negative (TC scratch): entry with the wrong net → ipc356 "free pad … drill 0.0" + "no matching IPC record", check_sources "3 of 4" + OtherPad / OtherDrill "has no flash", check_board "3 of 4 SMD_FREE_PADS" + TP3 as a THT free pad; entry dropped → ipc356 / check_sources fail, gerber_to_tracks "pad flash D36 at (72.9, -36.0) has no footprint pad"; extra entry → both fail; TP1 pad resized to 0.9 mm in a board copy → check_board "SMD test pad … 0.9 mm"; `smd_free_flashes` on fake layers: a flash missing, 0.9 mm, also on B.Cu, twice on F.Cu → each fails; run twice → unchanged |
-| B5 `SPLIT_PIN_MERGES` | 7b (Phase 4 parts: 8) | **done** (bf39429): `pcb.split_pins` / `split_pin_errors` (TC wrapper messages) / `merge_split_pins`; `pcb.ipc_records()` verifies and merges for every Phase 3 tool (build_pcb, gerber_to_tracks, assign_nets, check_board, the net map); `ipc_records(merge=False)` for ipc356_diff and gerber_roundtrip (Phase 4 sees the Proteus nets; a first draft merged there too and changed a net name in TC's `roundtrip.txt`); ipc356 `--check` (instead of "same refdes-pin on different nets"; `SPLIT_PIN_NETS` is derived, no longer needed); compare_netlists `load_ipc` (joins merged → kept, prints the pairs with their other pins, e.g. R67-1); assign_nets `accept_split_pin_opens` (two groups, the pin's pads in different groups; report line `accepted open (SPLIT_PIN_MERGES): …`, summary "(+n accepted SPLIT_PIN_MERGES opens)"); drc `split_pin_unconnected` (exactly one unconnected item per such net, all its items on it). TC's wrappers on top keep working (the shared code steps aside: replaced `compare_netlists.load_ipc` / `assign_nets.analyse`, a `pcb.configure(records=)` filter that has merged already; ipc356 / drc are compatible as they are): TC regression PASS, files identical. TC migration (scratch, section 3 7b): identical except the 14 `accepted open` tag lines of `reports/assign_nets.txt` (`(D1, board-local)` → `(SPLIT_PIN_MERGES)`): a text re-baseline of that tag only, which needs the user's OK (a decision like D-K2 / D-I7) before TC migrates. Also for TC's migration: `tools/measure_gaps.py` (not in check_all) drops its `pcb_wrap` import and `configure(records=)` (shared now), `tools/test_no_connect.py` calls `p2k compare_netlists` (with `STRICT_CHECKS = {"nc_joined"}`). Lost in the migration: TC check_sources' "the BGAPad flashes are exactly the U10 balls" (the shared check matches BGAPad flashes with any top SMD record; TC's Phase 4 wrapper still requires one KiCad record per U10 ball). Negative: merge entry dropped → ipc356 "IPC pin J2-1 has pads on ['5V', '5V.00301'], not in SPLIT_PIN_MERGES", compare_netlists and `ipc_records()` the same (exit), drc "1 unconnected items" (J2 5V); wrong merged net → "SPLIT_PIN_MERGES J2-1 ('5V', '5V.00026') != IPC pad nets …"; extra entry R67-1 → "!= IPC pad nets []"; assign_nets fakes: three groups, both pads in one group, another net's open → not accepted; drc fakes: two items on 5V, 5V missing, an item spanning 5V / GND → fail |
+| B4 `SMD_FREE_PADS` | 7b (Phase 4 parts: 8) | **done** (bf39429; Phase 4 part 1f4e0ee: ipc356_diff wants exactly one KiCad SMD free-pad record per listed position, 327, top, no drill (TC wrapper check); stdout line `n SMD free-pad records (SMD_FREE_PADS) …`, also under TC's unmigrated wrapper (its only regression stdout change); negative: an extra entry → "4 KiCad SMD free-pad records, 5 listed"; the round trip needs nothing, SMDPad flashes on both sides): `pcb.smd_free_pads()` / `is_smd_free_pad()` (blank refdes, SMD, top, unplated, no drill, listed position and raw net). ipc356 `--check` accepts exactly those records (`accepted:` line, every entry found); check_sources leaves them out of the OtherPad / OtherDrill lists (they match SMD flashes of their side) and requires all of them; gerber_to_tracks `load_copper()` → `smd_free_flashes()` moves their top SMD flashes to the OtherPad list (one round flash of the IPC size per position on the top layer, none elsewhere; idempotent, so TC's `pcb_wrap.py` patch 3 on top still works, same order as the wrapper so the assign_nets groups are unchanged); check_board `check_smd_free()` (one board-only SMD pad, copper F.Cu only, IPC size, net) plus the record count in `main`. Records are told by their fields, not the kind, so TC's check_sources wrapper (kind `smd_test_pad`) keeps working. Negative (TC scratch): entry with the wrong net → ipc356 "free pad … drill 0.0" + "no matching IPC record", check_sources "3 of 4" + OtherPad / OtherDrill "has no flash", check_board "3 of 4 SMD_FREE_PADS" + TP3 as a THT free pad; entry dropped → ipc356 / check_sources fail, gerber_to_tracks "pad flash D36 at (72.9, -36.0) has no footprint pad"; extra entry → both fail; TP1 pad resized to 0.9 mm in a board copy → check_board "SMD test pad … 0.9 mm"; `smd_free_flashes` on fake layers: a flash missing, 0.9 mm, also on B.Cu, twice on F.Cu → each fails; run twice → unchanged |
+| B5 `SPLIT_PIN_MERGES` | 7b (Phase 4 parts: 8) | **done** (bf39429; Phase 4 part 1f4e0ee: ipc356_diff accepts exactly one "KiCad net K spans Proteus nets [kept, merged]" per entry, each must occur, both pad records of the pin on K, printed `accepted (SPLIT_PIN_MERGES)`; the pads of both Proteus nets on K follow from the 1:1 net map; steps aside under TC's unmigrated `phase4_wrap.py` (detected by its `SPANS` / `MERGES` in `__main__`), which reads the spans errors itself. Negative (TC migrated): J2 entry dropped → "KiCad net 5V spans Proteus nets ['5V', '5V.00301']"; wrong merged net → that error + "SPLIT_PIN_MERGES J2-1: no KiCad net joins Proteus nets 5V and 5V.00026". D-TC7b accepts the 14 tag lines below; the round trip needs nothing, nets are labels only): `pcb.split_pins` / `split_pin_errors` (TC wrapper messages) / `merge_split_pins`; `pcb.ipc_records()` verifies and merges for every Phase 3 tool (build_pcb, gerber_to_tracks, assign_nets, check_board, the net map); `ipc_records(merge=False)` for ipc356_diff and gerber_roundtrip (Phase 4 sees the Proteus nets; a first draft merged there too and changed a net name in TC's `roundtrip.txt`); ipc356 `--check` (instead of "same refdes-pin on different nets"; `SPLIT_PIN_NETS` is derived, no longer needed); compare_netlists `load_ipc` (joins merged → kept, prints the pairs with their other pins, e.g. R67-1); assign_nets `accept_split_pin_opens` (two groups, the pin's pads in different groups; report line `accepted open (SPLIT_PIN_MERGES): …`, summary "(+n accepted SPLIT_PIN_MERGES opens)"); drc `split_pin_unconnected` (exactly one unconnected item per such net, all its items on it). TC's wrappers on top keep working (the shared code steps aside: replaced `compare_netlists.load_ipc` / `assign_nets.analyse`, a `pcb.configure(records=)` filter that has merged already; ipc356 / drc are compatible as they are): TC regression PASS, files identical. TC migration (scratch, section 3 7b): identical except the 14 `accepted open` tag lines of `reports/assign_nets.txt` (`(D1, board-local)` → `(SPLIT_PIN_MERGES)`): a text re-baseline of that tag only, **accepted by the user (decision D-TC7b)**. Also for TC's migration: `tools/measure_gaps.py` (not in check_all) drops its `pcb_wrap` import and `configure(records=)` (shared now), `tools/test_no_connect.py` calls `p2k compare_netlists` (with `STRICT_CHECKS = {"nc_joined"}`). Lost in the migration: TC check_sources' "the BGAPad flashes are exactly the U10 balls" (the shared check matches BGAPad flashes with any top SMD record; TC's Phase 4 wrapper still requires one KiCad record per U10 ball). Negative: merge entry dropped → ipc356 "IPC pin J2-1 has pads on ['5V', '5V.00301'], not in SPLIT_PIN_MERGES", compare_netlists and `ipc_records()` the same (exit), drc "1 unconnected items" (J2 5V); wrong merged net → "SPLIT_PIN_MERGES J2-1 ('5V', '5V.00026') != IPC pad nets …"; extra entry R67-1 → "!= IPC pad nets []"; assign_nets fakes: three groups, both pads in one group, another net's open → not accepted; drc fakes: two items on 5V, 5V missing, an item spanning 5V / GND → fail |
 | B6 `ASSIGN_NETS_CHECK_REPORT` | 7c | **done** (6018091): `--check` writes its section to that file (board root relative; into `P2K_REPORTS` / `configure(reports=)` when set), `reports/assign_nets.txt` untouched (cmp), the final line names the check report. Migration = re-baseline of `reports/assign_nets.txt` (the after-zone-fill section leaves it) and the `make_pcb.sh --check` sed can go; optional per board, not proven as a commit |
 | B7 `DRC_ACCEPTED_ITEMS` | 7c | **done** (6018091): `{type: {pattern: reason or (reason, count)}}`, regex on the " / "-joined item descriptions of error violations. TC scratch with `DRC_ACCEPTED = {}`: `{r"Footprint": (…, 32)}` → OK ("accepted (DRC_ACCEPTED_ITEMS): 32 courtyards_overlap"); count 31 → "matches 32 violations, expected 31"; `r"Footprint C15 "` → the other 31 fail; a pattern matching nothing (U99, `of U10`) → stale error. No board migration needed (PR20 / PF17 are per-item wishes; boards may switch later) |
 | B8 `DRC_EXPECTED_WARNINGS` | 7c | **done** (6018091): exact counts per warning type, printed when they match. PF migration proven (scratch: `{"track_dangling": 0, "via_dangling": 0}`, `tools/check_no_dangling.py` and its step deleted, full regenerate: ALL CHECKS PASSED, everything identical). Negative: PF with one `REMOVED_TRACKS` entry dropped and the board rebuilt → "1 track_dangling warnings, DRC_EXPECTED_WARNINGS 0"; TC silk_over_copper 27 (is 28) → fails |
-| B9 `PENDING` | 7c (ipc356_diff / gerber_roundtrip: 8) | **done** (6018091) for drc, assign_nets `--check` and erc: `board.pending(tool)` (unknown tool key → error, so a batch-8 key cannot pass silently), `board.judge_pending` (every remaining failure matched, every entry matches ≥ 1, `PENDING USER DECISION: <question> (n items)`). Negative: TC drc with `DRC_ACCEPTED = {}` and `{r"^courtyards_overlap": …}` → PENDING line, OK; plus a `^clearance` entry → stale error; only `…of U10` → stale + 32 failures; `{"ipc356_diff": …}` → "unknown or unsupported tool"; TC board copy with one JFET_6 track deleted: assign_nets `--check` FAILED (open), with `{r"^open .*JFET_6": …}` OK + PENDING line, plus a `^short` entry → stale error, only a JFET_5 entry → stale + "not pending: open …JFET_6"; erc on a synthetic report: pin_not_driven error → rc 1, listed → PENDING line rc 0, extra entry → stale rc 1. Migrations: none needed (TC `drc_check.py` PENDING tables empty, removed with 7b; PA `phase4_checks.py` is Phase 4 → batch 8) |
+| B9 `PENDING` | 7c (ipc356_diff / gerber_roundtrip: 8) | **done** (6018091; ipc356_diff / gerber_roundtrip 1f4e0ee: `PENDING_TOOLS` has both; failure texts = ipc356_diff `ERROR` texts, round trip `other: …`, `missing: …`, `drill: …`, `pad match: …`, `counts: …`. Negative (TC migrated): `PHASE4_EXPECTED` vias 240 + `{"^PHASE4_EXPECTED": …}` → PENDING line, OK; same entry on a good board → stale, FAILED; plus an unlisted SMD_FREE_PADS error → FAILED; round trip dog-bone board + `{"^counts: F\.Cu": …}` → PENDING line, OK; on the good board → stale; a `^drill:` entry only → stale + "not pending: counts: …"; `{"check_board": …}` still an error) for drc, assign_nets `--check` and erc: `board.pending(tool)` (unknown tool key → error, so a batch-8 key cannot pass silently), `board.judge_pending` (every remaining failure matched, every entry matches ≥ 1, `PENDING USER DECISION: <question> (n items)`). Negative: TC drc with `DRC_ACCEPTED = {}` and `{r"^courtyards_overlap": …}` → PENDING line, OK; plus a `^clearance` entry → stale error; only `…of U10` → stale + 32 failures; `{"ipc356_diff": …}` → "unknown or unsupported tool"; TC board copy with one JFET_6 track deleted: assign_nets `--check` FAILED (open), with `{r"^open .*JFET_6": …}` OK + PENDING line, plus a `^short` entry → stale error, only a JFET_5 entry → stale + "not pending: open …JFET_6"; erc on a synthetic report: pin_not_driven error → rc 1, listed → PENDING line rc 0, extra entry → stale rc 1. Migrations: none needed (TC `drc_check.py` PENDING tables empty, removed with 7b; PA `phase4_checks.py` is Phase 4 → batch 8) |
 | B10 strict `track_nets` | 7c | **done** (6018091): check_board reads segment / arc / via nets from the board file (`p2k.sexpr`, by UUID) and compares them with the copper group net (assign_nets geometry C). All five boards pass (PA 254, PR 752, PF 516, HV 1977, TC 3586 items; read-only run on the board HEADs). Negative: TC board copy with one BIASREF segment set to `(net "GND")` in the file text → "track_nets: track F.Cu(57.405,-27.365)-(57.405,-26.905): net 'GND' in the board file, connected to BIASREF"; without the id check_board OK and assign_nets `--check` OK (the gap HV18 / PR24 describe) |
+
+| R1 Excellon units | 8 | **done** (1f4e0ee): `parse_excellon` reads `METRIC` / `INCH`, `,TZ` / `,LZ`, `;FILE_FORMAT=i:d` (defaults 3 decimals metric, 4 inch; a decimal point is read as is; no unit line = metric as before). PA / PR / PF inch sources vs their converted metric files: same holes, positions within 0.001 mm (the converter's rounding), diameters within 0.00004 mm; old parser on PA's inch file: (49.008, 5.355, 0.063). Synthetic `INCH,LZ` (`X0123` = 1.23 in) and `FILE_FORMAT=3:3` files read right. PA, PR (with `EXCELLON_MISSING`), PF with `DRILL_EXCELLON` = the inch source file: round trip OK, `roundtrip.txt` differs in one line only (`== excellon (<source name>)` instead of `fab_2010_drill_metric.drl`): the optional R1 migration is a one-line re-baseline per board (or keep `excellon_metric.py`) |
+| R2 `EXCELLON_MISSING` | 8 | **done** (1f4e0ee): `{(x, y, drill): reason}`, each entry exactly one "not in the Excellon file" mismatch (0.01 mm, drill_tol), report lines as PR's wrapper with `EXCELLON_MISSING_LABELS = dict(file=, items=, source=)` for its words. PR migration (`roundtrip.py` deleted, labels "2010 Excellon file" / "expected October vias" / "tools/roundtrip.py"): `roundtrip.txt` identical; without the labels 3 lines change (generic words). Negative: entry dropped → that via an ERROR; extra entry → "EXCELLON_MISSING 0.508 mm at (10.0, 10.0) was expected to be missing …"; wrong drill → 4 errors; unknown label key → exit |
+| R3 `DRILL_SMALLER` pad sets | 8 | **done** (1f4e0ee): value `(reason, pads)`, pads = `(refdes, pin)` or refdes (= its drilled IPC pads with the entry's Proteus drill); `pcb.drill_smaller_pad_errors`: accepted smaller drills of the pair = the listed pads, both ways, in ipc356_diff (pads from the matched records) and gerber_roundtrip (drill → nearest IPC drilled record); report / stdout texts unchanged (the reason is printed as before). Migrations: PA (C1-C6), PR (RLY1-5, C1/C5/C7/C10, 14 Orange Drops, C4/C14), PF (SERIES_MIX, C2, C4/C6/C7/C32), TC (J8): `check_drill_smaller.py` / `phase4_checks.py` deleted, identical. Negative: TC J8-3 missing → "J8-3: KiCad drill smaller, not in the entry's pad set"; extra J1-1 and unknown U99 → two errors; PR C10 unlisted (round trip) → C10-1 / C10-2; PR extra C1-1 → "listed pad C1-1 has no smaller KiCad drill"; value `("x", "J8")` → exit. Lost from the board scripts: their own pcbnew hole list ("one plated board hole per IPC drilled record"; covered by ipc356_diff's 1:1 records with plating and the round trip's 1:1 drills) and the per-part list of larger drills (info only) |
+| R4 strict `nc_joined` (ipc356_diff) | 8 | **done** (1f4e0ee): every `unconnected-(…)` net of the export has exactly one record (TC wrapper message). Negative: TC export with J11-38's net renamed to J11-37's → "KiCad net unconnected-(J11-Pad37) joins 2 pads (J11-37 J11-38): N/C pads wired together"; without the id OK |
+| R5 strict `roundtrip_pad_match` | 8 | **done** (1f4e0ee): pad raster groups (Proteus and KiCad pad components joined by overlap) need both sets' pads, areas within `ROUNDTRIP` `pad_area_tol` (0.25 of the larger) and centroids within `tol`. Negative (TC board copy, TP1 deleted and R68 moved 0.1 mm): without the id round trip OK (both "pad shape"), with it "only Proteus pad copper 0.435 mm^2, no pad of the other set" and two "pad centroid … 0.119 mm apart". **No board passes it** (KiCad library pad sizes: PA 24, PR 134, PF 44, HV 157, TC 163 errors, mostly areas; like `pad_extent`, it needs pad decisions or `PENDING` entries before a board can opt in) |
+| R7 strict `roundtrip_counts` | 8 | **done** (1f4e0ee): per layer KiCad Conductor draws = `gerber_to_tracks.load_layer(...).tracks` (pour edge strokes, REMOVED_TRACKS out), KiCad flashes = Proteus flashes (identical flashes once). TC: F.Cu 2132 / 933, In1 72 / 376, In2 221 / 376, B.Cu 922 / 574 = its `RT_DRAWS` and flash check; PA, PR, PF pass; **HV fails before its I7 migration** (B.Cu 401 vs 403: its `remove_dot_tracks.py` removes the 2 dot draws after gerber_to_tracks; after the D-I7 migration both are 401). Negative: TC dog-bone stub (0.38 mm GND segment between a U10 ball and its via) deleted in a board copy: round trip OK without the id (no area difference), with it "counts: F.Cu: 2131 KiCad track draws, gerber_to_tracks builds 2132" |
+| R10 `PHASE4_EXPECTED` | 8 | **done** (1f4e0ee): counts proteus, kicad, matched, pads, nc, nonet, vias, stacked, holes, free, nets; TC = its wrapper `EXPECT`. Negative: vias 240 → "PHASE4_EXPECTED: vias 239 (recorded 240)"; unknown key → exit |
+| `BGA_REFDES` (TC check_sources U10 check) | 8 | **done** (1f4e0ee): per copper layer the BGAPad flashes = the IPC pads of the listed parts on that side, 1:1 within 0.01 mm (TC wrapper messages with the layer name); summary line. TC `BGA_REFDES = "U10"`: "225 BGAPad flashes = the balls of U10". Negative: `"U3"` (a bottom part) → 225 "is not a U3 ball" + U3 pads without BGAPad flash on the bottom; `{"U10", "U99"}` → "BGA_REFDES: ['U99'] not in the IPC table"; without the key unchanged |
+| B11 `p2k.measure_gaps` | 9 | **done** (d82ee9a): default output = the boards' script (PA, HV: byte-identical stdout; PR, PF have the same script, md5 5f414ce…); `--per-layer` = TC's script (TC 7b-migrated scratch without `pcb_wrap` vs TC's script with it: identical). Bad argument → usage, exit 1 |
+| B12 `p2k make_pcb` | 9 | **done** (d82ee9a): `PCB_STEPS` (p2k modules or board scripts with arguments), stops at the first failing step and prints its full output. Same `--check` lines and in-place files as `tools/make_pcb.sh` on PA (default steps), PF (default), TC 7b-migrated (default, pours detected), HV (`PCB_STEPS` with `tools/remove_dot_tracks.py` until D-I7), PR (`PCB_STEPS` with `tools/rename_holes.py` until its B1 migration). Negative: a bogus `REMOVED_TRACKS` entry → gerber_to_tracks output + "make_pcb: FAILED at step gerber_to_tracks (exit 1); later steps not run: assign_nets, place_refdes" (both modes); `PCB_STEPS` with an unknown step, a string, `[]` → error before anything runs; unknown argument → usage |
+| B13 `p2k drc --by-refdes` | 9 | **done** (d82ee9a): TC `drc_pads.py` lifted (prefix `drc: by refdes:`); TC report (no pad conflicts, 32 other with `DRC_ACCEPTED = {}`) and a synthetic report (clearance / shorting / PTH pad / via-only) give the same table as `drc_pads.py`. Missing file / extra argument → exit 1 |
 
 Every other entry: open.
 
@@ -1084,34 +1129,60 @@ The board scripts were not changed, so these runs prove the defaults (and that T
 top). Migrations proven separately in scratch clones with `tools/p2k` symlinked (section 5): TC 7b
 (identical except the 14 `accepted open` tag lines of `reports/assign_nets.txt`), PF B8 (identical).
 
+**Batch 8, p2k 1f4e0ee, and batch 9, p2k d82ee9a, 2026-11-20** (`tools/regress.sh -j 5 <commit>
+<board>@<HEAD> ...` on the board HEADs recorded at the start of the session (unchanged since batch 4);
+batch 8 compared with batch 7c's logs (6018091, same HEADs; 4b19590 between is docs only), batch 9 with
+1f4e0ee on the same commits; five tube boards, D-REG; logs in `/tmp/p2k8/r8`, `/tmp/p2k8/r9` of that
+session): ALL BOARDS PASS at both commits.
+
+| Board | HEAD | 1f4e0ee | d82ee9a | stdout vs previous p2k (same HEAD) |
+|---|---|---|---|---|
+| tube_power_amp_kicad | 18de7a9 | PASS | PASS | identical |
+| tube_preamp_kicad | b2adf22 | PASS | PASS | identical |
+| tube_pi_fxloop_kicad | da551f3 | PASS | PASS | identical |
+| tube_hv_supplies_kicad | 6cb1d3f | PASS | PASS | identical |
+| ti60f225_tube_control_card | d2a4f66 | PASS | PASS | 1f4e0ee: one new line under its unmigrated `phase4_wrap.py`, `ipc356_diff: 4 SMD free-pad records (SMD_FREE_PADS): 327, top side, no drill, one per listed position` (TC has the key; the wrapper passes the shared lines through); the shared split-pin acceptance steps aside under the wrapper, the wrapper's own BGAPad addition and its assert still work. Every generated file identical. d82ee9a: identical |
+
+The board scripts were not changed, so these runs prove the defaults. Migrations proven separately in scratch
+clones (section 5 and section 3 batches 8 / 9): TC (7b + 8 + make_pcb: only the 14 D-TC7b lines), PR, PF, PA
+identical; R1 one line per board (optional).
+
 ## 7. Next batch: prompt for the next session
 
-> You work in ~/dev/proteus2kicad (main). Task: batch 8 of docs/CANDIDATES.md (Phase 4:
-> `p2k/gerber_roundtrip.py` R1, R2, R3, R5, R7, the B3 / B4 / B5 parts, B9; `p2k/ipc356_diff.py` R3, R4, the
-> B4 / B5 parts, B9, R10 if cheap). Read CANDIDATES.md first (section 0 rules, "Decisions" incl. D-REG,
-> D-K2, D-I7, section 3 batch 8, sections 5-6 for what is done, the R / B designs in sections 1.6-1.7),
-> README.md, and the board code batch 8 replaces: TC `tools/phase4_wrap.py` (D1 spans pairs, SMD test
-> pads, U10 records, one record per `unconnected-(…)` net, `EXPECT` / `RT_DRAWS` counts, its assert
-> `"BGAPad" not in rt.PAD_FUNCTIONS`), PR `tools/roundtrip.py` (`EXPECTED_NOT_IN_EXCELLON`, report lines
-> kept word for word), `tools/check_drill_smaller.py` of PF, PR, TC (pad sets per pair), PA
-> `tools/phase4_checks.py`, `tools/excellon_metric.py` of PA, PR, PF. Notes from batch 7: Phase 4 reads
-> `pcb.ipc_records(merge=False)` (the Proteus nets), so the B5 part is "accept exactly the
-> `SPLIT_PIN_MERGES` spans pairs" in ipc356_diff (TC wrapper semantics); B4 = the `SMD_FREE_PADS` records
-> vs KiCad's board-only SMD records (`pcb.is_smd_free_pad`); `PENDING` gets the tools `ipc356_diff` /
-> `gerber_roundtrip` (add them to `board.PENDING_TOOLS`, use `board.judge_pending`). Adding `"BGAPad"` to
-> `PAD_FUNCTIONS` breaks TC's unmigrated `phase4_wrap.py` (assert): either keep the shared default and
-> let a key / the wrapper's own addition decide, or make the shared addition invisible to the assert;
-> TC's wrappers must keep working on top of the new p2k until TC migrates. Every change: no key, no
-> change (defaults byte-identical), strict checks (`nc_joined` R4 part, `roundtrip_pad_match`,
-> `roundtrip_counts`) register a `board.STRICT_IDS` id (opt-in), negative-tested, documented in README.md;
-> wrapper semantics are the spec (rule 4); success output to stdout only (rule 3; PR's committed
-> `roundtrip.txt` lines of R2 are kept word for word). Prove the migrations in scratch clones (`git clone`
-> of the board, `tools/p2k` symlinked to this repo, full regenerate as in `tools/regress.sh` `regen()`,
-> `check_all.sh`, clean `git status`); say exactly which files change when a migration is not
-> byte-identical. Regression: the five tube boards only (D-REG): commit, record the board HEADs, run
-> `tools/regress.sh -j 5 <commit> <board>@<HEAD> ...` and the previous p2k commit on the same list (or
-> reuse the previous run's logs on the same HEADs: batch 7c's logs are listed in section 6), diff the
-> per-board logs. Do not edit `tools/regress.sh` while a run is in progress (bash reads it incrementally).
-> Do NOT commit anything in a board repo, and do nothing with tube_psu_kicad, its control card or
-> ac_psu_kicad. A cosmetic change that would alter committed `reference/*.md` goes to batch R (D-R).
-> Commit and push after the batch, update sections 5-6, and replace this prompt with the one for batch 9.
+> You work in ~/dev/proteus2kicad (main). Task: batch 10 of docs/CANDIDATES.md (docs: `CONVERSION_PLAYBOOK.md`
+> G3 rules, every config key of batches 1-9 in the playbook's key table (section 4), the `tools/regress.sh`
+> procedure, the shared tools that replace the board templates: `p2k erc`, `p2k sheets`, `p2k check_pin_order`,
+> `p2k check_pads`, `p2k make_pcb` (`PCB_STEPS`), `p2k.measure_gaps`, `p2k drc --by-refdes`, the Phase 4 keys;
+> README.md for anything not documented yet). Then batch R (D-R: `p2k/ipc356.py` I3 / I4 / I5; it deliberately
+> changes committed `reference/*.md` files: list per board exactly which files and lines change, prove each in
+> a scratch clone, regression shows the expected diffs only) and, if the user confirms the order, batch Z
+> (D-Z: `STRICT_CHECKS` default `"all"`, opt-out `STRICT_CHECKS = set()`; first record per board which ids it
+> passes today: see section 5, e.g. `roundtrip_pad_match` and `pad_extent` pass on no board, `roundtrip_counts`
+> fails on HV until its D-I7 migration; also I1 `truncated_nets_keys` is still unimplemented). Read
+> CANDIDATES.md first (section 0 rules, "Decisions" incl. D-REG, D-K2, D-I7, D-TC7b, section 3 batches 10 / R /
+> Z, sections 5-6), README.md and CONVERSION_PLAYBOOK.md. Rules unchanged: no key, no change (batch R is the
+> decided exception, Z needs the board opt-outs first); strict checks register a `board.STRICT_IDS` id;
+> negative tests; README.md documents every change; regression with `tools/regress.sh -j 5 <commit>
+> <board>@<HEAD> ...` on the five tube boards only (D-REG), HEADs recorded at the start, compared with the
+> previous p2k commit on the same HEADs (batch 9's logs: section 6); never edit regress.sh during a run. Do NOT
+> commit in a board repo; nothing with tube_psu_kicad, its control card or ac_psu_kicad. Commit and push per
+> batch, update sections 5-6 and this prompt.
+>
+> After R / Z: the **coordinated board migrations** (a separate session per board, in the board repo, each its
+> own reviewed commit after a `tools/p2k` bump with `check_all.sh` passing; then the meta-repo submodule bump).
+> Per board, the proven recipes (section 5, section 3 "Done" notes): **PA** part map / symbols / sheets / erc /
+> footprints / pin order (batches 2-6), `phase4_checks.py` → direct calls + C1-C6 `DRILL_SMALLER` pad set,
+> `make_pcb.sh` → `p2k make_pcb`, `measure_gaps.py` → `p2k.measure_gaps`; optional R1 (one roundtrip.txt line).
+> **PR** batches 2-6, `rename_holes.py` → `HOLE_START = 101`, `roundtrip.py` → `EXCELLON_MISSING` (+ labels for
+> identical lines), `check_drill_smaller.py` → pad sets, make_pcb, measure_gaps; optional R1. **PF** batches 2-6
+> (K2 sheets: D-K2 re-baseline), `tools/ipc356.py` → shared `IPC_PIN_IDS`, `check_no_dangling.py` →
+> `DRC_EXPECTED_WARNINGS`, `check_drill_smaller.py` → pad sets, make_pcb, measure_gaps; optional R1. **HV**
+> batches 2-6, `check_proteus_pads.py` → `p2k check_pads`, `remove_dot_tracks.py` → `REMOVED_TRACKS` count (D-I7
+> re-baseline; then `roundtrip_counts` passes), make_pcb (default steps after D-I7), measure_gaps, J1
+> `IPC_PIN_IDS` renumbering (a board design commit, D-PIN). **TC** batches 2-6, then 7b + 8 + 9 together
+> (`ipc356_check.py`, `check_sources.py`, `pcb_wrap.py`, `compare_netlists.py`, `drc_check.py`, `phase4_wrap.py`,
+> `check_drill_smaller.py`, `drc_pads.py`, `measure_gaps.py` deleted; `BGA_REFDES = "U10"`, `STRICT_CHECKS =
+> {"nc_joined", "roundtrip_counts"}`, `PHASE4_EXPECTED` = its `EXPECT`, J8 pad set, `make_pcb.sh` → `p2k
+> make_pcb`, `test_no_connect.py` on `p2k compare_netlists`): only the 14 D-TC7b lines of
+> `reports/assign_nets.txt` change; J11 `IPC_PIN_IDS` renumbering (board design commit). Each board adds the
+> strict ids it passes and its STATUS.md candidates get "solved in p2k <commit>".
