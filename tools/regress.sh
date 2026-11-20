@@ -5,9 +5,9 @@
 #   tools/regress.sh [-j N] [-k] [-o DIR] [COMMIT] [BOARD[@REV] ...]
 #
 #   COMMIT  proteus2kicad commit to test (default: HEAD of this repo; unpushed commits work)
-#   BOARD   board repo names under $REGRESS_BOARDS_DIR (default ~/dev); default: all seven.
-#           BOARD@REV clones that board commit instead of its HEAD (e.g. to rerun another p2k
-#           commit on the same board commits and diff the logs)
+#   BOARD   board repo names under $REGRESS_BOARDS_DIR (default ~/dev); default: the five tube
+#           boards (user decision 2026-11-20). BOARD@REV clones that board commit instead of its
+#           HEAD (e.g. to rerun another p2k commit on the same board commits and diff the logs)
 #   -j N    boards run in parallel (default 1)
 #   -k      keep the scratch clones (printed at the end)
 #   -o DIR  write the per-board logs to DIR (default: a new temporary directory, printed, kept)
@@ -26,7 +26,7 @@
 set -u
 P2K_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BOARDS_DIR="${REGRESS_BOARDS_DIR:-$HOME/dev}"
-ALL_BOARDS="tube_psu_kicad tube_power_amp_kicad tube_preamp_kicad tube_pi_fxloop_kicad tube_hv_supplies_kicad ti60f225_tube_control_card ac_psu_kicad"
+ALL_BOARDS="tube_power_amp_kicad tube_preamp_kicad tube_pi_fxloop_kicad tube_hv_supplies_kicad ti60f225_tube_control_card"
 jobs=1; keep=0; logdir=""
 while getopts "j:ko:" opt; do
     case $opt in

@@ -23,6 +23,17 @@ again - this pins down the placement convention Phase 3 uses.
 Usage: tools/p2k/bin/p2k check_footprints [-v]
        tools/p2k/bin/kipy -m p2k.check_footprints --pcbnew [-v]
 
+p2k_config.py keys (optional):
+  BOTTOM_THT    {refdes: reason}: the THT parts mounted on the bottom side. When the key is
+                present, a THT part that fits only mirrored and is not listed fails, and a listed
+                part that fits unmirrored fails (without the key: the note above)
+  FP_LIB_TABLE  (footprints.run writes kicad/fp-lib-table): every Footprint field with the PROJECT
+                nickname is resolved through kicad/fp-lib-table (entry present, uri =
+                lib/<PROJECT>.pretty, footprint file there)
+STRICT_CHECKS "pad_extent": a fitted KiCad pad that reaches outside the Proteus pad fails (without
+the id, -v prints it as a note). The Proteus pad is a circle (THT, w = h) or its w x h rectangle;
+the KiCad pad outline (rect, roundrect, oval, circle) is sampled; tolerance 0.005 mm.
+
 A board script may call main(added=...) with {refdes: {"footprint": fpid, "pins": [...]}} for
 parts added after the Proteus design (no IPC pads): their footprint and pad numbers are
 checked, nothing is fitted.
@@ -63,6 +74,70 @@ def best_fit(fp_pads, pads):
         return top
     bot = fpgeom.fit(fp_pads, pads, True)
     return bot if bot["max_res"] < top["max_res"] else top
+
+
+EXTENT_TOL = 0.005
+
+
+def _pad_outline(f):
+    """KiCad pad outline points in the footprint frame (Y up)."""
+    import math
+    w, h, shape = f["w"], f["h"], f["shape"]
+    if shape == "circle":
+        loc = [(w / 2 * math.cos(k * math.pi / 16), w / 2 * math.sin(k * math.pi / 16)) for k in range(32)]
+    elif shape in ("oval", "roundrect"):
+        r = min(w, h) / 2 if shape == "oval" else min(w, h) * f.get("rratio", 0.25)
+        ax, ay = w / 2 - r, h / 2 - r
+        loc = []
+        for sx, sy, a0 in ((1, 1, 0), (-1, 1, 90), (-1, -1, 180), (1, -1, 270)):
+            for k in range(9):
+                a = math.radians(a0 + k * 90 / 8)
+                loc.append((sx * ax + r * math.cos(a), sy * ay + r * math.sin(a)))
+    else:   # rect, trapezoid, custom: the size rectangle
+        loc = [(sx * w / 2, sy * h / 2) for sx in (1, -1) for sy in (1, -1)]
+    a = math.radians(f["rot"])
+    ca, sa = math.cos(a), math.sin(a)
+    return [(f["x"] + ca * u - sa * v, f["y"] + sa * u + ca * v) for u, v in loc]
+
+
+def pad_outside(f, q, r):
+    """Largest distance (mm) by which the placed KiCad pad f reaches outside the IPC pad q."""
+    import math
+    m = -1.0 if r["mirror"] else 1.0
+    ca, sa = math.cos(math.radians(r["angle"])), math.sin(math.radians(r["angle"]))
+    qa = math.radians(q["rot"])
+    qc, qs = math.cos(qa), math.sin(qa)
+    worst = 0.0
+    for px, py in _pad_outline(f):
+        bx, by = r["tx"] + ca * m * px - sa * py, r["ty"] + sa * m * px + ca * py
+        dx, dy = bx - q["x_mm"], by - q["y_mm"]
+        u, v = qc * dx + qs * dy, -qs * dx + qc * dy
+        if q["is_tht"] and abs(q["pad_w"] - q["pad_h"]) < 1e-6:
+            out = math.hypot(u, v) - q["pad_w"] / 2
+        else:
+            out = max(abs(u) - q["pad_w"] / 2, abs(v) - q["pad_h"] / 2)
+        worst = max(worst, out)
+    return worst
+
+
+def fp_lib_table_errors(fpids):
+    """FP_LIB_TABLE: the project nickname must resolve through kicad/fp-lib-table."""
+    import re
+    proj = board.config().PROJECT
+    mine = sorted(f for f in fpids if f.partition(":")[0] == proj)
+    if not mine:
+        return []
+    path = board.path("kicad", "fp-lib-table")
+    if not os.path.exists(path):
+        return [f"kicad/fp-lib-table missing: {len(mine)} footprints of {proj} cannot be resolved"]
+    libs = {m.group(1): m.group(2) for m in re.finditer(r'\(lib \(name "([^"]*)"\).*?\(uri "([^"]*)"\)', open(path).read())}
+    if proj not in libs:
+        return [f"kicad/fp-lib-table has no library {proj}"]
+    uri = libs[proj].replace("${KIPRJMOD}", board.path("kicad"))
+    if os.path.normpath(uri) != os.path.normpath(board.path("lib", f"{proj}.pretty")):
+        return [f"kicad/fp-lib-table: {proj} points to {libs[proj]}, not lib/{proj}.pretty"]
+    return [f"{f}: not in {libs[proj]}" for f in mine
+            if not os.path.exists(os.path.join(uri, f.partition(":")[2] + ".kicad_mod"))]
 
 
 def pcbnew_check(fit_rows, ipc):
@@ -112,6 +187,8 @@ def main(argv=None, added=None):
     with open(map_csv_path()) as f:
         fmap = {r["refdes"]: r["footprint"] for r in csv.DictReader(l for l in f if not l.startswith("# "))}
     errors, notes = [], []
+    bottom_tht = getattr(board.config(), "BOTTOM_THT", None)
+    strict_extent = board.strict("pad_extent")
     cache = {}
     fit_rows, pad_rows = [], []
     per_fp = {}
@@ -193,7 +270,25 @@ def main(argv=None, added=None):
         agg["ddr"] = max(agg["ddr"], ddr)
         agg["axis"] = max(agg["axis"], axis)
         if pads[0]["is_tht"] and r["mirror"]:
-            notes.append(f"{ref}: THT pad pattern fits only mirrored -> bottom side")
+            if bottom_tht is not None and ref not in bottom_tht:
+                errors.append(f"{ref}: THT pad pattern fits only mirrored (bottom side) but {ref} is not in BOTTOM_THT")
+            else:
+                notes.append(f"{ref}: THT pad pattern fits only mirrored -> bottom side")
+        elif bottom_tht is not None and ref in bottom_tht:
+            errors.append(f"{ref}: in BOTTOM_THT but its pad pattern fits unmirrored (top side)")
+        if strict_extent or verbose:
+            out = [(pad_outside(f, q, r), num) for num, f, q, _ in r["pads"]]
+            out = [(d, n) for d, n in out if d > EXTENT_TOL]
+            if out:
+                msg = (f"{ref} ({fpid}): KiCad pad outside the Proteus pad: " +
+                       ", ".join(f"pad {n} +{d:.3f} mm" for d, n in sorted(out, key=lambda t: -t[0])[:4])
+                       + (f" (+{len(out) - 4} more)" if len(out) > 4 else ""))
+                (errors if strict_extent else notes).append(msg)
+    if bottom_tht is not None:
+        for ref in sorted(set(bottom_tht) - set(ipc)):
+            errors.append(f"BOTTOM_THT: {ref} is not an IPC part")
+    if getattr(board.config(), "FP_LIB_TABLE", False):
+        errors.extend(fp_lib_table_errors({next(iter(f)) for f, _ in sch.values() if len(f) == 1} - {""}))
     reports = board.path("reports")
     os.makedirs(reports, exist_ok=True)
     with open(os.path.join(reports, "footprint_fit.csv"), "w", newline="") as f:

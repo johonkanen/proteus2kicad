@@ -15,7 +15,8 @@ pad size, drill). RULES = [(symbol, conditions, footprint, note), ...]; the firs
 wins and every refdes must match one. Conditions: n = pad count, tht = True/False,
 span (mm, +-0.02), pad = (w, h) of the IPC pads (all pads this size, order-free), drill,
 package / device = that column of lib/part_map.csv (when two Proteus packages have the same
-pad pattern, e.g. film capacitors of different widths), refdes = a tuple/set of refdes (a rule
+pad pattern, e.g. film capacitors of different widths; a string matches exactly, a tuple / set
+matches any of its values), refdes = a tuple/set of refdes (a rule
 for named parts only, e.g. the Proteus pad sizes where the KiCad pads collide with Proteus
 copper; put it before the general rule; every refdes named in such a condition must be
 assigned by one of the rules naming it).
@@ -42,7 +43,28 @@ PROJECT = {name: spec}; spec keys
   descr      description text
   board_only True: a one-pad footprint for board-only items (mounting holes, free pads; used
              by p2k.build_pcb, not by a symbol): pad = (diameter, drill), plated (bool),
-             number (pad number, "" for an unplated hole); not reported as unused
+             number (pad number, "" for an unplated hole); not reported as unused;
+             or smd_pad = (diameter, "F" | "B"): a round SMD pad 1 on that side's copper and mask
+  bottom     True: the part is mounted on the bottom side: the IPC pads of the `ipc` refdes are
+             taken as bottom-side pads, so a footprint built from them (or fitted by derive) is
+             mirrored, and in its own view the pads run as seen from the component side
+  max_move   derived footprints: largest allowed pad move (mm) from the base position onto the
+             IPC position; derive fails beyond it and prints the mirror state and the largest move.
+             With STRICT_CHECKS "derive_max_move" every derived spec with `ipc` gets the limit
+             DERIVE_MAX_MOVE (config, default 0.5) x the smallest pad pitch of the base unless it
+             sets max_move, and a base that fits only mirrored fails unless the spec sets bottom
+  pads       derived footprints: {pad number or "*": dict(shape=, size=(w, h), rratio=, drill=,
+             expect_shape=)} applied after the derivation (sizes in the footprint frame, the pad
+             rotation is kept; roundrect_rratio / chamfer entries are removed before a shape is set,
+             roundrect needs rratio; a circle needs a square size; expect_shape: the pad number must
+             be exactly one pad of that shape in the derived footprint before the override); a
+             number the footprint does not have is an error
+  pin1_dot   derived footprints: (x, y, r) in the footprint frame (Y down): a filled circle on
+             F.SilkS (0.12) and F.Fab (0.1) inserted directly before pad 1
+  body_from  IPC-built footprints: dict(layer="Top Assembly", centre=(x, y), min_len=, radius=,
+             expect=n): body_poly = the start points (rounded to 0.001) of the draws of the CADCAM
+             gerber `layer` longer than min_len with both ends within radius of centre (board
+             coordinates), sorted by angle around the centre; expect = required point count
 
 p2k_config.py keys
   PROJECT              library nickname (lib/<PROJECT>.pretty, "<PROJECT>:<name>")
@@ -52,6 +74,15 @@ p2k_config.py keys
                        project footprints, derived specs get ipc_sizes)
   OFF_BOARD_PARTS      optional {refdes: note} for parts of the part map that have no IPC pads
                        (not fitted); they get no footprint
+  FP_LIB_TABLE         optional: True = run also writes / --checks kicad/fp-lib-table (one entry:
+                       nickname PROJECT, ${KIPRJMOD}/../lib/<PROJECT>.pretty); a string = that
+                       entry's descr instead of the default text
+  DERIVE_MAX_MOVE      optional factor for the strict derive_max_move limit (default 0.5)
+  PROTEUS_PADS         optional {refdes}: these parts get the Proteus pad sizes: the footprint their
+                       rule assigns is replaced by "<name>_ProteusPads" (KiCad library footprint ->
+                       derived with ipc_sizes; derived project footprint -> a copy with ipc_sizes;
+                       one per (footprint, note), `ipc` = its first part), note + " (Proteus pad sizes)"
+  PROTEUS_PAD_OVERRIDES optional {"<name>_ProteusPads": pads}: the `pads` key of such a spec
 
 `added` (optional argument of run / assign): {refdes: {"footprint": ..., "note": ...}} for
 parts the board added after the Proteus design (no IPC pads); they are assigned as listed.
@@ -123,7 +154,7 @@ def match(cond, f, part):
         if key in ("package", "device"):
             if key not in part:
                 raise SystemExit(f"footprints: rule condition {key!r} needs that column in lib/part_map.csv")
-            if part[key] != want:
+            if (part[key] != want) if isinstance(want, str) else (part[key] not in want):
                 return False
             continue
         if key == "n" and f["n"] != want:
@@ -239,6 +270,13 @@ def derive(name, spec, ipc):
         if fr["missing"] or fr["extra"] or fr["count_diff"]:
             raise SystemExit(f"{name}: pad numbers of {spec['base']} do not match {ref}: "
                              f"missing {fr['missing']}, extra {fr['extra']}, count differs {fr['count_diff']}")
+        strict_move = board.strict("derive_max_move")
+        limit = spec.get("max_move")
+        if limit is None and strict_move:
+            centres = sorted({(round(f["x"], 6), round(f["y"], 6)) for f in fp_pads})
+            pitch = min((math.hypot(a[0] - b[0], a[1] - b[1]) for i, a in enumerate(centres)
+                         for b in centres[i + 1:]), default=0.0)
+            limit = getattr(board.config(), "DERIVE_MAX_MOVE", 0.5) * pitch if pitch else None
         moved = {}
         for num, f, q, _ in fr["pads"]:
             pad = nodes[id(f)]
@@ -254,6 +292,21 @@ def derive(name, spec, ipc):
                     drill = sexpr.find(pad, "drill")
                     drill[1:] = [q["drill"]]
             at[1:] = [_r4(x), _r4(-y)] + ([_r4(rot)] if abs(rot) > 1e-9 else [])
+        if limit is not None or strict_move:
+            worst = max(((math.hypot(*moved[id(f)]), num) for num, f, _, _ in fr["pads"]), default=(0.0, ""))
+            mirrored_only = fr["mirror"] and not spec.get("bottom") and pads[0]["side"] != "bottom"
+            print(f"footprints: {name}: fit on {ref} {'mirrored' if fr['mirror'] else 'unmirrored'}, "
+                  f"largest pad move {worst[0]:.3f} mm (pad {worst[1]})"
+                  + (f", limit {limit:.3f} mm" if limit is not None else ""))
+            if limit is not None and worst[0] > limit + 1e-9:
+                raise SystemExit(f"{name}: pad {worst[1]} moves {worst[0]:.3f} mm onto {ref}, more than "
+                                 f"{limit:.3f} mm (max_move; wrong renumbering or base?)")
+            if mirrored_only:
+                msg = (f"{name}: {spec['base']} fits {ref} only mirrored (a bottom-side part? set "
+                       "bottom=True, or fix the renumbering)")
+                if strict_move:
+                    raise SystemExit(msg)
+                print("footprints: note: " + msg)
         # pads without a number (paste segments of a big pad) follow the nearest numbered pad
         for u in unnumbered:
             near = min(fp_pads, key=lambda f: math.hypot(f["x"] - u["x"], f["y"] - u["y"]))
@@ -465,14 +518,119 @@ def single_pad(name, spec):
     return node
 
 
+def smd_single_pad(name, spec):
+    """Board-only one-pad SMD footprint (spec smd_pad = (diameter, "F" | "B"))."""
+    dia, side = spec["smd_pad"]
+    if side not in ("F", "B"):
+        raise SystemExit(f"{name}: smd_pad side must be 'F' or 'B', not {side!r}")
+    r = dia / 2
+
+    def lay(layer):
+        return f"{side}.{layer}"
+    return [Sym("footprint"), name, [Sym("version"), FILE_VERSION], [Sym("generator"), f"{project()}_gen_footprints"],
+            [Sym("layer"), lay("Cu")], [Sym("descr"), f"{spec['descr']} ({project()}, board-only)"],
+            [Sym("property"), "Reference", "REF**", [Sym("at"), 0, _r4(-r - 1.0), 0],
+             [Sym("layer"), lay("SilkS")], _eff(0.8, 0.12)],
+            [Sym("property"), "Value", name, [Sym("at"), 0, _r4(r + 1.0), 0], [Sym("layer"), lay("Fab")], _eff(0.8, 0.12)],
+            [Sym("attr"), Sym("smd"), Sym("board_only"), Sym("exclude_from_pos_files"), Sym("exclude_from_bom")],
+            _circle(r + 0.25, "CrtYd", 0.05),
+            [Sym("pad"), "1", Sym("smd"), Sym("circle"), [Sym("at"), 0, 0], [Sym("size"), dia, dia],
+             [Sym("layers"), lay("Cu"), lay("Mask")]],
+            [Sym("embedded_fonts"), Sym("no")]]
+
+
+def pad_options(name, spec, node):
+    """Spec keys `pads` and `pin1_dot` on a derived footprint node (in place)."""
+    over = spec.get("pads")
+    if over:
+        for num, o in over.items():
+            if "expect_shape" in o:
+                hits = [p for p in sexpr.find_all(node, "pad") if num == "*" or str(p[1]) == num]
+                if not hits or any(str(p[3]) != o["expect_shape"] for p in hits) or (num != "*" and len(hits) != 1):
+                    raise SystemExit(f"{name}: expected one {o['expect_shape']} pad {num} in the base, got "
+                                     f"{[str(p[3]) for p in hits]}")
+        seen = set()
+        for pad in sexpr.find_all(node, "pad"):
+            o = over.get(str(pad[1]), over.get("*"))
+            if o is None:
+                continue
+            seen.add(str(pad[1]) if str(pad[1]) in over else "*")
+            if "shape" in o:
+                pad[3] = Sym(o["shape"])
+            if "size" in o:
+                sexpr.find(pad, "size")[1:] = list(o["size"])
+            if "drill" in o:
+                sexpr.find(pad, "drill")[1:] = [o["drill"]]
+            pad[:] = [c for c in pad if not (isinstance(c, list) and c and c[0] in ("roundrect_rratio", "chamfer_ratio", "chamfer"))]
+            if o.get("shape") == "roundrect":
+                if "rratio" not in o:
+                    raise SystemExit(f"{name}: pads {pad[1]}: roundrect needs rratio")
+                pad.append([Sym("roundrect_rratio"), o["rratio"]])
+            size = sexpr.find(pad, "size")
+            if str(pad[3]) == "circle" and "shape" in o and float(size[1]) != float(size[2]):
+                raise SystemExit(f"{name} pad {pad[1]}: circle needs a square size, not {size[1:]}")
+        missing = set(over) - seen
+        if missing:
+            raise SystemExit(f"{name}: `pads` names pads the footprint does not have: {sorted(missing)}")
+    if spec.get("pin1_dot"):
+        x, y, r = spec["pin1_dot"]
+        pad1 = [p for p in sexpr.find_all(node, "pad") if str(p[1]) == "1"]
+        if not pad1:
+            raise SystemExit(f"{name}: pin1_dot but no pad 1")
+        i = node.index(pad1[0])
+        dots = [_dot(x, y, r, "F.SilkS", 0.12), _dot(x, y, r, "F.Fab", 0.1)]
+        if node[i - 2:i] != dots:      # not twice (a board wrapper may already have added it)
+            node[i:i] = dots
+    return node
+
+
+def _dot(x, y, r, layer, width):
+    return [Sym("fp_circle"), [Sym("center"), x, y], [Sym("end"), round(x + r, 4), y],
+            [Sym("stroke"), [Sym("width"), width], [Sym("type"), Sym("solid")]], [Sym("fill"), Sym("yes")],
+            [Sym("layer"), layer]]
+
+
+def body_from(name, bf):
+    """Spec key body_from -> body_poly (board coordinates)."""
+    import glob
+    from . import gerber
+    layer = bf.get("layer", "Top Assembly")
+    paths = glob.glob(os.path.join(board.path(board.config().CADCAM), f"*{layer}.GBR"))
+    if len(paths) != 1:
+        raise SystemExit(f"{name}: body_from: gerber '*{layer}.GBR' not found once in CADCAM ({len(paths)} hits)")
+    cx, cy = bf["centre"]
+    pts = []
+    for d in gerber.parse(paths[0]).of(gerber.Draw):
+        if math.hypot(d.x2 - d.x1, d.y2 - d.y1) > bf["min_len"] and \
+                all(math.hypot(x - cx, y - cy) < bf["radius"] for x, y in ((d.x1, d.y1), (d.x2, d.y2))):
+            pts.append((round(d.x1, 3), round(d.y1, 3)))
+    if "expect" in bf and len(pts) != bf["expect"]:
+        raise SystemExit(f"{name}: body_from: {len(pts)} draws found, expected {bf['expect']}: {pts}")
+    if len(pts) < 3:
+        raise SystemExit(f"{name}: body_from: only {len(pts)} draws found: {pts}")
+    return sorted(pts, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
+
+
 def build_library(project_fps, ipc=None):
     ipc = ipc or fpgeom.ipc_pads_by_refdes()
+    if any(spec.get("bottom") for spec in project_fps.values()):
+        ipc = copy.deepcopy(ipc)
+        for spec in project_fps.values():
+            if spec.get("bottom"):
+                for p in ipc[spec["ipc"]]:
+                    p["side"] = "bottom"
     out = {}
     for name, spec in project_fps.items():
         if spec.get("board_only"):
-            node = single_pad(name, spec)
+            node = smd_single_pad(name, spec) if spec.get("smd_pad") else single_pad(name, spec)
+        elif spec.get("base"):
+            node = pad_options(name, spec, derive(name, spec, ipc))
         else:
-            node = derive(name, spec, ipc) if spec.get("base") else from_ipc(name, spec, ipc)
+            if spec.get("body_from"):
+                if spec.get("body_poly"):
+                    raise SystemExit(f"{name}: body_from and body_poly are exclusive")
+                spec = dict(spec, body_poly=body_from(name, spec["body_from"]))
+            node = from_ipc(name, spec, ipc)
         out[name + ".kicad_mod"] = sexpr.dump(node) + "\n"
     return out
 
@@ -532,6 +690,52 @@ def proteus_sizes(assignment, project_fps):
     return out, fps
 
 
+def proteus_pads(assignment, project_fps, refs, overrides=None):
+    """PROTEUS_PADS: the parts `refs` get "<footprint>_ProteusPads" (Proteus pad sizes).
+    Returns (assignment, project_fps)."""
+    proj = project()
+    overrides = dict(overrides or {})
+    out, fps = dict(assignment), copy.deepcopy(project_fps)
+    unknown = sorted(set(refs) - set(assignment))
+    if unknown:
+        raise SystemExit(f"footprints: PROTEUS_PADS names parts without a footprint: {' '.join(unknown)}")
+    groups = {}
+    for ref in sorted(refs, key=_refdes_key):
+        groups.setdefault(assignment[ref], []).append(ref)
+    for (fp, note), grp in sorted(groups.items()):
+        nick, _, stem = fp.partition(":")
+        name = stem + "_ProteusPads"
+        if nick == proj:
+            src = project_fps.get(stem)
+            if src is None or not src.get("base"):
+                raise SystemExit(f"footprints: PROTEUS_PADS {' '.join(grp)}: {fp} is not a derived project "
+                                 "footprint (an IPC-built footprint already has the Proteus pads)")
+            spec = dict(copy.deepcopy(src), ipc=grp[0], ipc_sizes=True, descr=src["descr"] + "; Proteus pad sizes")
+        else:
+            spec = dict(base=fp, ipc=grp[0], ipc_sizes=True, descr=f"{note}; Proteus pad sizes")
+        if name in overrides:
+            spec["pads"] = overrides.pop(name)
+        if name in fps and fps[name] != spec:
+            raise SystemExit(f"footprints: PROTEUS_PADS: {name} is already a different project footprint")
+        fps[name] = spec
+        for ref in grp:
+            out[ref] = (f"{proj}:{name}", note + " (Proteus pad sizes)")
+    if overrides:
+        raise SystemExit(f"footprints: PROTEUS_PAD_OVERRIDES for footprints PROTEUS_PADS does not make: {sorted(overrides)}")
+    return out, fps
+
+
+FP_LIB_TABLE_DESCR = "Project footprints, pad numbers = IPC pin ids (tools/gen_footprints.py)"
+
+
+def fp_lib_table_text(value):
+    descr = value if isinstance(value, str) else FP_LIB_TABLE_DESCR
+    proj = project()
+    return ("(fp_lib_table\n\t(version 7)\n"
+            f'\t(lib (name "{proj}")(type "KiCad")(uri "${{KIPRJMOD}}/../lib/{proj}.pretty")(options "")(descr "{descr}"))\n'
+            ")\n")
+
+
 # ---------------------------------------------------------------- generator main
 
 def run(rules, project_fps, argv=None, added=None):
@@ -546,6 +750,12 @@ def run(rules, project_fps, argv=None, added=None):
         assignment, project_fps = proteus_sizes(assignment, project_fps)
     elif mode != "kicad":
         raise SystemExit(f"footprints: FOOTPRINT_PAD_SIZES must be 'kicad' or 'proteus', not {mode!r}")
+    pp = getattr(board.config(), "PROTEUS_PADS", None)
+    if pp:
+        if mode == "proteus":
+            raise SystemExit("footprints: PROTEUS_PADS with FOOTPRINT_PAD_SIZES = 'proteus' (every part has them)")
+        assignment, project_fps = proteus_pads(assignment, project_fps, pp,
+                                               getattr(board.config(), "PROTEUS_PAD_OVERRIDES", None))
     used = {fp.split(":", 1)[1] for fp, _ in assignment.values() if fp.startswith(proj + ":")}
     unused = sorted(set(project_fps) - used - {n for n, sp in project_fps.items() if sp.get("board_only")})
     undefined = sorted(used - set(project_fps))
@@ -565,6 +775,9 @@ def run(rules, project_fps, argv=None, added=None):
     stale = []
     want = {os.path.join(pretty, k): v for k, v in files.items()}
     want[map_path] = files_map
+    fplt = getattr(board.config(), "FP_LIB_TABLE", False)
+    if fplt:
+        want[board.path("kicad", "fp-lib-table")] = fp_lib_table_text(fplt)
     have = set()
     if os.path.isdir(pretty):
         have = {os.path.join(pretty, f) for f in os.listdir(pretty) if f.endswith(".kicad_mod")}

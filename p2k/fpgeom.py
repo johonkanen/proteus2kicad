@@ -55,6 +55,9 @@ def load_footprint(path):
             "rot": float(at[3]) if len(at) > 3 and _isnum(at[3]) else 0.0,
             "w": float(size[1]), "h": float(size[2]), "drill": d,
         })
+        rr = sexpr.find(pad, "roundrect_rratio")
+        if rr is not None:
+            pads[-1]["rratio"] = float(rr[1])
     return pads
 
 
@@ -74,8 +77,8 @@ def _snap(angle):
     return a
 
 
-def _solve(pairs):
-    """pairs: [((px, py), (qx, qy))] -> (angle_deg, tx, ty, residuals)."""
+def _solve(pairs, free_angle=False):
+    """pairs: [((px, py), (qx, qy))] -> (angle_deg, tx, ty, residuals); free_angle: no 45 deg snap."""
     n = len(pairs)
     pcx = sum(p[0] for p, _ in pairs) / n
     pcy = sum(p[1] for p, _ in pairs) / n
@@ -86,7 +89,11 @@ def _solve(pairs):
         px, py, qx, qy = px - pcx, py - pcy, qx - qcx, qy - qcy
         c += px * qx + py * qy
         s += px * qy - py * qx
-    ang = _snap(math.degrees(math.atan2(s, c))) if n > 1 else 0.0
+    if n < 2:
+        ang = 0.0
+    else:
+        ang = math.degrees(math.atan2(s, c))
+        ang = ang % 360.0 if free_angle else _snap(ang)
     ca, sa = math.cos(math.radians(ang)), math.sin(math.radians(ang))
     tx = qcx - (ca * pcx - sa * pcy)
     ty = qcy - (sa * pcx + ca * pcy)
@@ -97,8 +104,9 @@ def _solve(pairs):
     return ang, tx, ty, res
 
 
-def fit(fp_pads, ipc_pads, mirror):
-    """Match pads by number and fit. Pads sharing a number are paired by trying
+def fit(fp_pads, ipc_pads, mirror, free_angle=False):
+    """Match pads by number and fit (free_angle: the least-squares angle without the 45 deg
+    snap, e.g. for sockets with 36 deg pin steps). Pads sharing a number are paired by trying
     every permutation (small groups only). Returns a dict, or None-free error info:
       ok_numbers, missing (IPC pins without fp pad), extra (fp pads without IPC pin),
       angle, tx, ty, mirror, pads: [(num, fp_pad, ipc_pad, residual)], max_res."""
@@ -130,7 +138,7 @@ def fit(fp_pads, ipc_pads, mirror):
             for f, q in zip(fpg[n], perm):
                 pairs.append(((m * f["x"], f["y"]), (q["x_mm"], q["y_mm"])))
                 meta.append((n, f, q))
-        ang, tx, ty, res = _solve(pairs)
+        ang, tx, ty, res = _solve(pairs, free_angle)
         if best is None or max(res) < best[0]:
             best = (max(res), ang, tx, ty, res, meta)
     mx, ang, tx, ty, res, meta = best

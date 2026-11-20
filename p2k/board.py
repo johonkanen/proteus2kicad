@@ -60,6 +60,8 @@ STRICT_IDS = frozenset({
     "no_connect_pin_type",   # check_symbols (S7)
     "nc_joined",             # compare_netlists (C2); ipc356_diff later (R4)
     "net_names",             # compare_netlists (C4)
+    "derive_max_move",       # footprints (F3)
+    "pad_extent",            # check_footprints (CF2)
 })
 
 
