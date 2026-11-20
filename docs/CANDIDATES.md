@@ -5,10 +5,11 @@ batch 2 (Proteus project reader and part map; 0b7a294), batch 3 (symbols, netlis
 2686b4b), batch 4 (schematic drawing; 631e74b), batch 5 (footprints; fa46323), batch 6 (pin order and
 pad checks; 306c26e), batch 7a (PCB build chain fixes and holes; 6fc78ea), batch 7b (SMD test pads and
 split pins; bf39429), batch 7c (DRC acceptance, pending decisions, track nets; 6018091), batch 8
-(Phase 4; 1f4e0ee) and batch 9 (measure_gaps, drc --by-refdes, make_pcb; d82ee9a) done;
-see "Status per entry" (section 5) and the regression record (section 6). Later sessions implement
-the rest batch by batch (section 3) and tick the entries off there. The prompt for the next
-session is at the end (section 7).
+(Phase 4; 1f4e0ee), batch 9 (measure_gaps, drc --by-refdes, make_pcb; d82ee9a), batch 10 (playbook /
+docs; 4e97292), batch R (ipc356 report texts, D-R; 303e4fe) and batch Z (strict checks on by default,
+D-Z; 2fb1563) done: every planned p2k batch is done. See "Status per entry" (section 5) and the
+regression record (section 6). What is left is the coordinated board migrations, one session per
+board; section 7 has a self-contained prompt per board.
 
 Sources: the "## p2k candidates" section of `STATUS.md` in the five board repos converted with
 p2k `c5682dd`, and their board-local workarounds in `tools/`. `tube_psu_kicad` and `ac_psu_kicad`
@@ -38,7 +39,10 @@ have no candidate list; tube_psu contributes code (`tools/measure_gaps.py`, `too
    config key, `STRICT_CHECKS` (a set of check ids, default `set()`; `"all"` = every id). The id is
    given with each entry below. The key is read by `p2k.board` (`board.strict(id)`), so all modules
    use one mechanism. Boards opt in during their migration. Flipping the default is a separate,
-   last batch (Z) and needs the user (section 4).
+   last batch (Z) and needs the user (section 4). **Since batch Z (2fb1563, D-Z)** the default is
+   `board.STRICT_DEFAULT` (every id except `pad_extent` and `roundtrip_pad_match`) and a board records
+   its exceptions in `STRICT_CHECKS_OFF = {id: reason}`; a new strict id still starts outside the
+   default (opt-in) and joins it only in a batch that says so.
 3. **Success output goes to stdout, not into committed reports.** A new acceptance or verification
    that passes prints to stdout only. It never adds lines to a committed report
    (`reports/roundtrip/roundtrip.txt`, `reports/assign_nets.txt`, `reports/footprint_*.csv`,
@@ -93,6 +97,39 @@ have no candidate list; tube_psu contributes code (`tools/measure_gaps.py`, `too
   wording stays. The migration session applies it in TC's migration commit (together with the
   batch-8 Phase 4 part, which adds no further change; section 5 B5 / R4) and records it in TC's
   STATUS.md. No board commit in the p2k sessions.
+
+- **D-Z implementation (batch Z, 2fb1563, this session; within D-Z):** the default-on set is the ids the
+  migrated tube boards pass, `board.STRICT_DEFAULT` = `no_connect_pin_type`, `nc_joined`, `net_names`,
+  `derive_max_move`, `hole_refdes`, `track_nets`, `roundtrip_counts`. `pad_extent` and `roundtrip_pad_match`
+  fail on every board (KiCad library pad sizes) and stay opt-in, so no board needs an opt-out for them.
+  Opt-out key `STRICT_CHECKS_OFF = {id: reason}` (subtracts from the default or from an explicit
+  `STRICT_CHECKS`): known ids only, a non-empty reason each, and an entry for an id that is off anyway
+  fails (stale), so every board's list is explicit and minimal. `STRICT_CHECKS = set()` keeps the old
+  behaviour. Per board after migration (section 7): **PA none, PR none** (after `HOLE_START = 101`),
+  **PF none, HV none** (after the D-I7 migration), **TC none** with spec `max_move` on its two intended
+  wide-row SOIC-8 moves (RS1 0.753 mm, FLASH1 0.985 mm; else `{"derive_max_move": …}`). Until a board's
+  migration commit, its bump commit carries the temporary exceptions (PR `hole_refdes`, HV
+  `roundtrip_counts`; TC the two `max_move`), proven in section 6.
+- **D-R list (batch R, 303e4fe):** exactly these committed lines change (section 6): PA
+  `reference/pin_nets_by_component.md` 2 lines (`Net aliases`, `Index`); PR the same file, 1 line (`Net
+  aliases`); PF the same file, 2 lines; HV `pin_nets_by_component.md` 1 line (`Index`: `REF` → `REF1`) and
+  `pins_by_net.md` 4 lines (B+, GND, PREOUT, V_A: two-hole terminals listed once); TC
+  `pin_nets_by_component.md` 2 lines (truncation `none`, `Index`) and `pins_by_net.md` 3 lines (12V, GND,
+  OPAMP_-15V). `.csv` / `.json` unchanged. Each board commits them with its p2k bump.
+- **R1 converters (coordinating session, 2026-11-20, within D-R):** the migrations drop
+  `tools/excellon_metric.py` and `reference/fab_2010_drill_metric.drl` (PA, PR, PF) and point
+  `DRILL_EXCELLON` at the original inch file; the one `reports/roundtrip/roundtrip.txt` line that names
+  the Excellon file is an accepted re-baseline.
+- **PR relays (coordinating session, 2026-11-20):** PR's RLY1-RLY5 move to `IPC_PIN_IDS` (Proteus
+  G5V-2(HI) pins → Omron pin numbers, the same map as PF's SERIES_MIX) with KiCad's stock `Relay:G5V-2`
+  symbol and `Relay_THT:Relay_DPDT_Omron_G5V-2` footprint, as PF: electrically identical (same copper,
+  same pad sets per net), a reviewed PR design commit after its migration.
+- **Ribbon renumbering (D-PIN, coordinating session 2026-11-20):** HV J1 and TC J11 get `IPC_PIN_IDS`
+  (Proteus pin k → KiCad pad k + 1 for odd k, k − 1 for even k), the stock header footprint with the
+  Proteus pad sizes, copper unchanged, the square pad on the new pad 1; both boards in coordinated
+  commits. Note (section 7, HV): on TC the pad at KiCad's pin-1 position is square already (copper
+  unchanged); on HV the user made all J1 pads round in Phase 5, so a square HV pad 1 is a one-pad copper
+  change that needs the user's confirmation.
 
 ## 1. Deduplicated candidates
 
@@ -714,6 +751,10 @@ generators (`make_part_map.py`, `gen_symbols.py`, `tools/sheets/sheet*.py`, `gen
 | `roundtrip_counts` | R7 | track counts per layer differ |
 | `truncated_nets_keys` | I1 | a `TRUNCATED_NETS` key matches no restored refdes |
 
+Default-on since batch Z (2fb1563, `board.STRICT_DEFAULT`): every id except `pad_extent` and
+`roundtrip_pad_match`; exceptions per board in `STRICT_CHECKS_OFF = {id: reason}` (section "Decisions", D-Z
+implementation).
+
 Implemented (registered in `board.STRICT_IDS`): `no_connect_pin_type`, `nc_joined` (compare_netlists part;
 the ipc356_diff part R4 since batch 8, 1f4e0ee), `net_names` (batch 3, 2686b4b), `derive_max_move`, `pad_extent`
 (batch 5, fa46323), `hole_refdes` (batch 7a, 6fc78ea), `track_nets` (batch 7c, 6018091), `roundtrip_pad_match`,
@@ -903,6 +944,10 @@ Batch 7 is split into three commits, each regression-tested.
 - Files: `CONVERSION_PLAYBOOK.md` (G3 rules, the new keys in the table of section 4, the
   `regress.sh` procedure), README.md (anything not documented by earlier batches).
 
+- **Done (4e97292).** Playbook: the G3 rules in the phases and pitfalls, the shared tools and keys of
+  batches 1-9 per phase, a "board-local template → shared tool / key" table (section 4), the `regress.sh`
+  procedure replacing the ac_psu regression paragraph; README points to that table. Docs only.
+
 ### Batch R (needs the user): report text fixes
 
 - Decided (D-R): re-baseline. Files: `p2k/ipc356.py` (I3, I4, I5); later batches can add cosmetic
@@ -910,12 +955,25 @@ Batch 7 is split into three commits, each regression-tested.
 - These deliberately change committed `reference/*.md` files. Each board commits the
   re-generated files together with the bump. For AC this is an exception to the "committed files
   unchanged" rule, and only if I5 touches AC.
+- **Done (303e4fe).** I3: an empty `NET_ALIASES` / `TRUNCATED_REFDES` prints `none`; I4: the `Index:` line
+  groups by letter prefix only when two or more refdes share it, else the refdes itself (`HT_0`, `P6`,
+  `MV0`, `REF1`, `OSC1`); I5: `pins_by_net.md` lists each `(refdes, pin)` once and counts distinct pins.
+  Exact board lines: "Decisions", D-R list; proof: section 6. README "Changes (upgrade notes)".
 
 ### Batch Z (needs the user): flip strict defaults
 
 Decided (D-Z): when every board has either opted in to all strict ids or recorded an opt-out, the
 default of `STRICT_CHECKS` becomes `"all"` (new boards get the checks automatically), and boards
 keep explicit opt-outs in their config.
+
+**Done (2fb1563)**, as the coordinating session specified: the default is the ids the migrated boards pass
+(`board.STRICT_DEFAULT`, not `"all"`: `pad_extent` / `roundtrip_pad_match` pass nowhere yet), opt-out
+`STRICT_CHECKS_OFF = {id: reason}` (minimal: a stale entry fails), `STRICT_CHECKS` explicit = exactly
+those ids (`set()` = old behaviour). Negative tests (fake board config): unknown id in either key, an
+empty reason, a set instead of a dict, an entry for `pad_extent` (off by default) or for an id outside an
+explicit `STRICT_CHECKS` → each an error; `"all"` + `{"pad_extent": …}` → every id but pad_extent. README
+"Changes (upgrade notes)" (behaviour change, opt-out key, `STRICT_CHECKS = set()`), both keys in the
+config table, playbook section 4. Per-board results: section 6; per-board opt-outs: "Decisions".
 
 ### Deferred (no batch yet)
 
@@ -1012,8 +1070,13 @@ All three were answered on 2026-11-20 (section "Decisions": D-R, D-Z, D-AC). Kep
 | B11 `p2k.measure_gaps` | 9 | **done** (d82ee9a): default output = the boards' script (PA, HV: byte-identical stdout; PR, PF have the same script, md5 5f414ce…); `--per-layer` = TC's script (TC 7b-migrated scratch without `pcb_wrap` vs TC's script with it: identical). Bad argument → usage, exit 1 |
 | B12 `p2k make_pcb` | 9 | **done** (d82ee9a): `PCB_STEPS` (p2k modules or board scripts with arguments), stops at the first failing step and prints its full output. Same `--check` lines and in-place files as `tools/make_pcb.sh` on PA (default steps), PF (default), TC 7b-migrated (default, pours detected), HV (`PCB_STEPS` with `tools/remove_dot_tracks.py` until D-I7), PR (`PCB_STEPS` with `tools/rename_holes.py` until its B1 migration). Negative: a bogus `REMOVED_TRACKS` entry → gerber_to_tracks output + "make_pcb: FAILED at step gerber_to_tracks (exit 1); later steps not run: assign_nets, place_refdes" (both modes); `PCB_STEPS` with an unknown step, a string, `[]` → error before anything runs; unknown argument → usage |
 | B13 `p2k drc --by-refdes` | 9 | **done** (d82ee9a): TC `drc_pads.py` lifted (prefix `drc: by refdes:`); TC report (no pad conflicts, 32 other with `DRC_ACCEPTED = {}`) and a synthetic report (clearance / shorting / PTH pad / via-only) give the same table as `drc_pads.py`. Missing file / extra argument → exit 1 |
+| G3 playbook / README rules | 10 | **done** (4e97292): N/C pin rule, valve symbols, driving sheets first, J112 / IRF820 substitutes (Phase 1); pin order, `BOTTOM_THT`, `FP_LIB_TABLE`, `PROTEUS_PADS`, `IPC_PIN_IDS` (Phase 2); `p2k make_pcb` and the chained-steps pitfall, DRC closest-pad, edited track nets (Phase 3, pitfalls); Phase 4 keys; template → shared tool table and the `regress.sh` procedure (section 4) |
+| I3 empty key prints "none" | R | **done** (303e4fe): `Net aliases: none.` / `Refdes restored from 6-char truncation: none.` (PA, PR, PF aliases; TC truncation) |
+| I4 index prefix groups | R | **done** (303e4fe): a prefix is a group only when ≥ 2 refdes share it, else the refdes itself: PA `HT_0 HT_N6 HT_P6 N6 P6` (was `HT_ HT_N HT_P N P`), PF `MV0 N6 P6`, HV `REF1`, TC `AD2 ADC1 FLASH1 ISO5V OSC1 V4` |
+| I5 two-hole pin listed once | R | **done** (303e4fe): HV B+ / GND / PREOUT / V_A, TC 12V / GND / OPAMP_-15V (members and counts) |
+| D-Z strict default | Z | **done** (2fb1563): `STRICT_DEFAULT`, `STRICT_CHECKS_OFF`; per board before migration: PA, PF pass; PR `hole_refdes` (H4 / H5), HV `roundtrip_counts` (B.Cu 401 / 403), TC `derive_max_move` (RS1 0.753 mm, FLASH1 0.985 mm > 0.635); after migration none (section "Decisions") |
 
-Every other entry: open.
+Every other entry: open (I1 `truncated_nets_keys`, I2 and the deferred list of section 3).
 
 ## 6. Regression record
 
@@ -1147,42 +1210,303 @@ The board scripts were not changed, so these runs prove the defaults. Migrations
 clones (section 5 and section 3 batches 8 / 9): TC (7b + 8 + make_pcb: only the 14 D-TC7b lines), PR, PF, PA
 identical; R1 one line per board (optional).
 
-## 7. Next batch: prompt for the next session
+**Batch 10, p2k 4e97292, 2026-11-20:** docs only (`CONVERSION_PLAYBOOK.md`, README.md; `p2k/` and `bin/`
+unchanged), so no regression run.
 
-> You work in ~/dev/proteus2kicad (main). Task: batch 10 of docs/CANDIDATES.md (docs: `CONVERSION_PLAYBOOK.md`
-> G3 rules, every config key of batches 1-9 in the playbook's key table (section 4), the `tools/regress.sh`
-> procedure, the shared tools that replace the board templates: `p2k erc`, `p2k sheets`, `p2k check_pin_order`,
-> `p2k check_pads`, `p2k make_pcb` (`PCB_STEPS`), `p2k.measure_gaps`, `p2k drc --by-refdes`, the Phase 4 keys;
-> README.md for anything not documented yet). Then batch R (D-R: `p2k/ipc356.py` I3 / I4 / I5; it deliberately
-> changes committed `reference/*.md` files: list per board exactly which files and lines change, prove each in
-> a scratch clone, regression shows the expected diffs only) and, if the user confirms the order, batch Z
-> (D-Z: `STRICT_CHECKS` default `"all"`, opt-out `STRICT_CHECKS = set()`; first record per board which ids it
-> passes today: see section 5, e.g. `roundtrip_pad_match` and `pad_extent` pass on no board, `roundtrip_counts`
-> fails on HV until its D-I7 migration; also I1 `truncated_nets_keys` is still unimplemented). Read
-> CANDIDATES.md first (section 0 rules, "Decisions" incl. D-REG, D-K2, D-I7, D-TC7b, section 3 batches 10 / R /
-> Z, sections 5-6), README.md and CONVERSION_PLAYBOOK.md. Rules unchanged: no key, no change (batch R is the
-> decided exception, Z needs the board opt-outs first); strict checks register a `board.STRICT_IDS` id;
-> negative tests; README.md documents every change; regression with `tools/regress.sh -j 5 <commit>
-> <board>@<HEAD> ...` on the five tube boards only (D-REG), HEADs recorded at the start, compared with the
-> previous p2k commit on the same HEADs (batch 9's logs: section 6); never edit regress.sh during a run. Do NOT
-> commit in a board repo; nothing with tube_psu_kicad, its control card or ac_psu_kicad. Commit and push per
-> batch, update sections 5-6 and this prompt.
+**Batch R, p2k 303e4fe, and batch Z, p2k 2fb1563, 2026-11-20** (board HEADs recorded at the start, unchanged
+since batch 4: PA 18de7a9, PR b2adf22, PF da551f3, HV 6cb1d3f, TC d2a4f66; compared with batch 9's logs on the
+same HEADs; logs in `/tmp/p2kZ/{rR,rRb,probe,rZ,rZb}` of that session). Both batches change outcomes by design,
+so each was run twice: on the board HEADs (shows exactly what changes) and on scratch board repos
+(`REGRESS_BOARDS_DIR`) = the HEAD plus one commit carrying exactly the accepted change (must PASS, stdout
+otherwise identical).
+
+| Board | R on HEAD | R + D-R re-baseline | Z on HEAD | Z + D-R + exceptions |
+|---|---|---|---|---|
+| tube_power_amp_kicad | FAIL: only `M reference/pin_nets_by_component.md` | PASS (1d399f4) | FAIL: only the R file | PASS (1d399f4) |
+| tube_preamp_kicad | FAIL: only `M reference/pin_nets_by_component.md` | PASS (8550865) | FAIL: R file + `hole_refdes` ERROR in build_pcb (H4 H5), cascade (board not rebuilt) | PASS (3809887: `STRICT_CHECKS_OFF = {"hole_refdes": …}`) |
+| tube_pi_fxloop_kicad | FAIL: only `M reference/pin_nets_by_component.md` | PASS (f4b5b68) | FAIL: only the R file | PASS (f4b5b68) |
+| tube_hv_supplies_kicad | FAIL: only `M reference/pin_nets_by_component.md`, `pins_by_net.md` | PASS (90e5e34) | FAIL: R files + `roundtrip_counts` "B.Cu: 401 KiCad track draws, gerber_to_tracks builds 403" (+ its section in `roundtrip.txt`) | PASS (51dc135: `{"roundtrip_counts": …}`) |
+| ti60f225_tube_control_card | FAIL: only `M reference/pin_nets_by_component.md`, `pins_by_net.md` | PASS (ee9ebdb) | FAIL: R files + `derive_max_move` "SOIC-8_7.5x5.85mm_P1.27mm_Proteus: pad 8 moves 0.753 mm onto RS1, more than 0.635 mm" (gen_footprints, both runs) | PASS (73eb02f: spec `max_move=0.8` RS1, `1.0` FLASH1; moves 0.753 / 0.985) |
+
+Batch R: `check_all.sh` passes on every HEAD (ALL CHECKS PASSED; `ipc356 --check` compares with the
+regenerated files), the only failure is the clean-status step with exactly the D-R files; the stdout of every
+board is identical to batch 9 apart from that status block (TC: plus the varying KiCad `Net-(RS1-B)` DRC item
+text). With the re-baseline commits all five PASS with stdout identical to batch 9. Batch Z on the HEADs: a
+probe commit with the same default (60de20b, throwaway branch, = 2fb1563's behaviour without R) gave the same
+strict failures; rZ = probe + exactly the R files. With the exceptions (scratch commits = the bump commits of
+section 7) all five PASS; the stdout differs from the R + re-baseline run only by the passing strict lines
+(rule 3: stdout only): footprints `fit on …, largest pad move …, limit …` per derived spec
+(`derive_max_move`), `check_board: n track / via nets … (track_nets)`, `ipc356_diff: n unconnected-(...) nets,
+one record each (nc_joined)`, `roundtrip: counts (roundtrip_counts): …` (not on HV, whose exception is that id).
+No generated file differs. PA and PF pass the whole default set as they are.
+
+## 7. Next step: the coordinated board migrations (one session per board)
+
+Every planned p2k batch is done. What is left happens in the board repos: one session per board, each
+with the self-contained prompt below. They are independent, except that **HV J1 and TC J11** (the two
+ends of one ribbon cable) are renumbered in coordinated commits (HV's and TC's last steps), and the
+meta-repo submodule bump comes after the boards. Order suggestion: PA (pilot, simplest), PF, PR, TC, HV.
+
+Common to every prompt (repeated in each, so each can be pasted alone):
+
+- **p2k pin:** the newest proteus2kicad `main` (all code is in 2fb1563 = batch Z; later commits are docs
+  only). Record the commit you bump to in STATUS.md.
+- **Regenerate** (the order of `tools/regress.sh` `regen()`): `p2k ipc356` (PF: its `tools/ipc356.py`
+  until deleted), `python3 tools/make_part_map.py`, `python3 tools/gen_symbols.py`, every
+  `tools/sheets/sheet[0-9]*.py`, `python3 tools/gen_footprints.py`, `tools/p2k/bin/kipy -m
+  p2k.check_footprints --pcbnew`, `tools/make_pcb.sh`; then `tools/check_all.sh` (ALL CHECKS PASSED) and
+  `git status` (only the accepted re-baselines of that commit). After committing, prove the commit
+  from a clean clone: `~/dev/proteus2kicad/tools/regress.sh <pin> <board>` must PASS (it clones the
+  committed board, regenerates, runs check_all.sh, requires a clean tree). **Keep `tools/make_pcb.sh`**
+  as the one-liner `exec tools/p2k/bin/p2k make_pcb "$@"` (the harness calls it).
+- **Commits** (board repo only, each reviewed): (1) bump + D-R re-baseline + temporary strict exceptions
+  (`check_all.sh` passing); (2) the migration (board-local tools → shared keys; byte-identical except the
+  accepted re-baselines listed for the board; the temporary exceptions removed); (3) design changes listed
+  for the board, if any. STATUS.md: each p2k candidate gets "solved in p2k <pin>" (or "not migrated:
+  reason"), and the re-baselines are recorded with their decision ids. Push the board repo; then the
+  meta repo `tube_amplifier_kicad` bumps its submodule (one commit for all boards when they are done).
+- **Strict checks (D-Z):** do not set `STRICT_CHECKS` (the default is every id except `pad_extent` /
+  `roundtrip_pad_match`); record an exception only as `STRICT_CHECKS_OFF = {id: reason}` (an entry for a
+  check that is off anyway fails). The final opt-out list per board is given below.
+- Rules: the proofs per item are in `tools/p2k/docs/CANDIDATES.md` section 5 (and section 3 "Done"
+  notes); read them first, with that file's "Decisions" (D-K2, D-I7, D-TC7b, D-R, D-Z, R1, PR relays,
+  ribbon) and README.md "Changes (upgrade notes)". Anything not byte-identical that is not in the board's
+  accepted list: stop and ask. Nothing in other board repos (except the coordinated HV / TC ribbon step).
+
+### 7.1 PA: `tube_power_amp_kicad` (pilot)
+
+> You work in ~/dev/tube_power_amp_kicad. Task: migrate the board to the shared proteus2kicad tools.
+> Read STATUS.md, PLAN.md, tools/check_all.sh, then after the bump tools/p2k/README.md ("Changes"),
+> tools/p2k/CONVERSION_PLAYBOOK.md section 4 (template → shared tool table) and
+> tools/p2k/docs/CANDIDATES.md ("Decisions", sections 5 and 7). Regenerate / verify as CANDIDATES.md
+> section 7 "Common" says (regen order, check_all.sh, git status, `~/dev/proteus2kicad/tools/regress.sh
+> <pin> tube_power_amp_kicad` PASS after each commit); keep `tools/make_pcb.sh` as `exec
+> tools/p2k/bin/p2k make_pcb "$@"`.
 >
-> After R / Z: the **coordinated board migrations** (a separate session per board, in the board repo, each its
-> own reviewed commit after a `tools/p2k` bump with `check_all.sh` passing; then the meta-repo submodule bump).
-> Per board, the proven recipes (section 5, section 3 "Done" notes): **PA** part map / symbols / sheets / erc /
-> footprints / pin order (batches 2-6), `phase4_checks.py` → direct calls + C1-C6 `DRILL_SMALLER` pad set,
-> `make_pcb.sh` → `p2k make_pcb`, `measure_gaps.py` → `p2k.measure_gaps`; optional R1 (one roundtrip.txt line).
-> **PR** batches 2-6, `rename_holes.py` → `HOLE_START = 101`, `roundtrip.py` → `EXCELLON_MISSING` (+ labels for
-> identical lines), `check_drill_smaller.py` → pad sets, make_pcb, measure_gaps; optional R1. **PF** batches 2-6
-> (K2 sheets: D-K2 re-baseline), `tools/ipc356.py` → shared `IPC_PIN_IDS`, `check_no_dangling.py` →
-> `DRC_EXPECTED_WARNINGS`, `check_drill_smaller.py` → pad sets, make_pcb, measure_gaps; optional R1. **HV**
-> batches 2-6, `check_proteus_pads.py` → `p2k check_pads`, `remove_dot_tracks.py` → `REMOVED_TRACKS` count (D-I7
-> re-baseline; then `roundtrip_counts` passes), make_pcb (default steps after D-I7), measure_gaps, J1
-> `IPC_PIN_IDS` renumbering (a board design commit, D-PIN). **TC** batches 2-6, then 7b + 8 + 9 together
-> (`ipc356_check.py`, `check_sources.py`, `pcb_wrap.py`, `compare_netlists.py`, `drc_check.py`, `phase4_wrap.py`,
-> `check_drill_smaller.py`, `drc_pads.py`, `measure_gaps.py` deleted; `BGA_REFDES = "U10"`, `STRICT_CHECKS =
-> {"nc_joined", "roundtrip_counts"}`, `PHASE4_EXPECTED` = its `EXPECT`, J8 pad set, `make_pcb.sh` → `p2k
-> make_pcb`, `test_no_connect.py` on `p2k compare_netlists`): only the 14 D-TC7b lines of
-> `reports/assign_nets.txt` change; J11 `IPC_PIN_IDS` renumbering (board design commit). Each board adds the
-> strict ids it passes and its STATUS.md candidates get "solved in p2k <commit>".
+> 1. **Bump** `tools/p2k` to the newest proteus2kicad main (≥ 2fb1563). Regenerate `reference/` with
+>    `tools/p2k/bin/p2k ipc356`: exactly 2 lines of `reference/pin_nets_by_component.md` change (`Net
+>    aliases: none.`, the `Index:` line with `HT_0 HT_N6 HT_P6 N6 P6`): decision D-R, commit them with the
+>    bump. No strict exception is needed (PA passes the default set). check_all.sh must pass.
+> 2. **Migration** (one commit; every generated file byte-identical except the R1 line below):
+>    - `tools/make_part_map.py` → data + `p2k.part_map.run(SPEC)` (`LATIN1 = True`, `OFF_BOARD` 3-tuples;
+>      `LATIN1_PARTS` dropped); `lib/part_map.csv` identical.
+>    - `tools/gen_symbols.py`: `pin_types()` → `from_std(..., pin_types=...)` (keep `add_pins()`).
+>    - `tools/sheets/_common.py`: `place_mirrored` → `place(..., 0, mirror=axis)`; `term()` →
+>      `sheetkit.terminal(sh, ref, x, y, d, symbol=sym(ref), value=sh_value(ref), justify="away")`.
+>    - `tools/erc.sh` deleted → check_all step `tools/p2k/bin/p2k erc`, `ERC_FATAL_WARNINGS =
+>      {"no_connect_connected"}`.
+>    - `tools/gen_footprints.py`: `fp_lib_table()` → `FP_LIB_TABLE = True`; the `bottom` wrapper → spec key
+>      `bottom=True`; `octal_body()` → `body_from=dict(centre=(118.4, 19.685), min_len=15, radius=15.5,
+>      expect=4)`; optional `BOTTOM_THT = {U6..U9: reason}`.
+>    - `tools/check_pin_order.py` deleted → `PIN_ORDER` (9 entries: 5 groups, ideal octal, octal footprint
+>      vs ideal, octal on IPC) + `PIN_ORDER_BOTTOM = {"U6", "U7", "U8", "U9"}`, check_all step
+>      `tools/p2k/bin/kipy -m p2k.check_pin_order`; re-run the STATUS.md negative tests against it.
+>    - `tools/phase4_checks.py` deleted → check_all steps `tools/p2k/bin/p2k ipc356_diff` and
+>      `tools/p2k/bin/p2k gerber_roundtrip --check`; `DRILL_SMALLER` C1-C6 entry in the pad-set form
+>      `(reason, {"C1", …, "C6"})`.
+>    - `tools/excellon_metric.py` and `reference/fab_2010_drill_metric.drl` deleted (R1), `DRILL_EXCELLON =
+>      "source/fab_2010/OUTPUT - CADCAM Drill.TXT"` (inch, read natively); accepted re-baseline: the one
+>      `== excellon (…)` line of `reports/roundtrip/roundtrip.txt` (file name). Drop its check_all step.
+>    - `tools/make_pcb.sh` → the one-liner (default `PCB_STEPS`); `tools/measure_gaps.py` deleted (use
+>      `kipy -m p2k.measure_gaps`).
+> 3. **Strict opt-outs after migration: none** (`STRICT_CHECKS_OFF` absent). STATUS.md: candidates 1-25 →
+>    "solved in p2k <pin>" where they are (CANDIDATES.md section 1 maps PA<n> to entries). Commit, push.
+
+### 7.2 PR: `tube_preamp_kicad`
+
+> You work in ~/dev/tube_preamp_kicad. Task: migrate the board to the shared proteus2kicad tools, then
+> the relay design change. Read STATUS.md, PLAN.md, tools/check_all.sh, then after the bump
+> tools/p2k/README.md ("Changes"), tools/p2k/CONVERSION_PLAYBOOK.md section 4 and
+> tools/p2k/docs/CANDIDATES.md ("Decisions", sections 5 and 7). Regenerate / verify as CANDIDATES.md
+> section 7 "Common" says (`~/dev/proteus2kicad/tools/regress.sh <pin> tube_preamp_kicad` PASS after each
+> commit); keep `tools/make_pcb.sh` as `exec tools/p2k/bin/p2k make_pcb "$@"`.
+>
+> 1. **Bump** to the newest proteus2kicad main (≥ 2fb1563). `p2k ipc356`: 1 line of
+>    `reference/pin_nets_by_component.md` changes (`Net aliases: none.`; D-R). The default strict
+>    `hole_refdes` fails (schematic H4 / H5 = mounting holes H4 / H5 before `rename_holes.py` renames
+>    them), so add temporarily `STRICT_CHECKS_OFF = {"hole_refdes": "H4 / H5 until the HOLE_START = 101
+>    migration"}`. Commit with the bump; check_all.sh passes (proven in p2k's batch-Z regression).
+> 2. **Migration** (byte-identical except the R1 line):
+>    - `make_part_map.py` → `part_map.run` (`LATIN1 = True`; `SINGLE_LETTER_PARTS`, `LATIN1_PARTS` dropped).
+>    - `gen_symbols.py`: `swap_units()` / `hide_pin_names()` / `pin_types()` → `from_std(units=,
+>      hide_pin_names=True, pin_types=)` (the relay part is replaced in step 3 anyway).
+>    - sheets `_common.py`: `place_mirrored` → `place(mirror=)`, `term()` → `terminal(..., justify="away")`,
+>      `hcap()` → `place(..., text_gap=3.81)`, the per-sheet `gnd(p)` → `sheetkit.rail(sh, p, y=…)`.
+>    - `tools/compare.py` deleted → `tools/p2k/bin/p2k compare_netlists` (`nc_joined`, `net_names` are on
+>      by default). `tools/erc.sh` → `p2k erc`, `ERC_FATAL_WARNINGS = {"no_connect_connected",
+>      "footprint_link_issues"}`.
+>    - `gen_footprints.py`: `FP_LIB_TABLE = True`; `bottom=True` spec key; `derive_with_pad_shapes` →
+>      `pads={"1": dict(shape="circle", expect_shape="rect")}`; `noval_body()` → `body_from=dict(centre=
+>      (-156.1, 6.168), min_len=20, radius=19, expect=4)`.
+>    - `check_pin_order.py` deleted → `PIN_ORDER` (11 entries: `spec=` groups with `polarity`, relay
+>      `symbol_renumber=` (until step 3), noval ideal / footprint / IPC with `other=0.02`),
+>      `PIN_ORDER_MAX_MOVE` = its `MOVE_LIMIT`, `PIN_ORDER_BOTTOM = {"U1", "U2", "U3"}`; negative tests.
+>    - `rename_holes.py` and its make_pcb step deleted → `HOLE_START = 101` (board file identical); **remove
+>      the `hole_refdes` exception** (it passes now).
+>    - `roundtrip.py` deleted → `EXCELLON_MISSING` (the two October-2010 vias) + `EXCELLON_MISSING_LABELS
+>      = dict(file="2010 Excellon file", items="expected October vias", source="tools/roundtrip.py")`
+>      (report lines word for word), check_all step `p2k gerber_roundtrip --check`.
+>    - `check_drill_smaller.py` deleted → `DRILL_SMALLER` pad sets (RLY1-RLY5; C1 / C5 / C7 / C10; the 14
+>      Orange Drops; C4 / C14).
+>    - `excellon_metric.py` + `reference/fab_2010_drill_metric.drl` deleted (R1), `DRILL_EXCELLON =
+>      "source/fab_2010/etunen - CADCAM Drill.TXT"`; accepted: the `== excellon (…)` line of `roundtrip.txt`.
+>    - `make_pcb.sh` one-liner (default steps), `measure_gaps.py` deleted. Keep
+>      `tools/check_removed_tracks.py` (a board decision guard, not a p2k workaround).
+> 3. **Relay design change** (own commit, coordinating-session decision "PR relays"): RLY1-RLY5 to Omron
+>    pin numbers as PF: `IPC_PIN_IDS = {f"RLY{i}": {"1": "9", "2": "13", "3": "11", "4": "16", "5": "1",
+>    "6": "4", "7": "6", "8": "8"} for i in range(1, 6)}` (the inverse of the current footprint
+>    renumbering); symbol KiCad's stock `Relay:G5V-2` unchanged (`from_std("Relay", "G5V-2", …)` as PF's
+>    `gen_symbols.py`; `g5v2()` deleted), footprint stock `Relay_THT:Relay_DPDT_Omron_G5V-2` (the
+>    `Relay_DPDT_Omron_G5V-2_ProteusPins` spec deleted); redraw the relays on sheets 1-3 for the one-unit
+>    symbol (the `relay()` helper); `PIN_ORDER` relay entry as PF's (stock footprint, no
+>    `symbol_renumber`). Electrically identical: compare_netlists, check_board, assign_nets, DRC,
+>    ipc356_diff, gerber_roundtrip all pass; the copper is unchanged (round trip identical apart from
+>    names); expected changes: `reference/*` (RLY pin ids), `lib/` (symbol, footprint, map), sheets 1-3,
+>    the board file (RLY pad numbers, auto net names `Net-(RLY…)`), reports that print those names. List
+>    them in STATUS.md (design change, electrically identical).
+> 4. **Strict opt-outs after migration: none.** STATUS.md candidates → "solved in p2k <pin>". Commit, push.
+
+### 7.3 PF: `tube_pi_fxloop_kicad`
+
+> You work in ~/dev/tube_pi_fxloop_kicad. Task: migrate the board to the shared proteus2kicad tools. Read
+> STATUS.md, PLAN.md, tools/check_all.sh, then after the bump tools/p2k/README.md ("Changes"),
+> tools/p2k/CONVERSION_PLAYBOOK.md section 4 and tools/p2k/docs/CANDIDATES.md ("Decisions", sections 5 and
+> 7). Regenerate / verify as CANDIDATES.md section 7 "Common" says (`~/dev/proteus2kicad/tools/regress.sh
+> <pin> tube_pi_fxloop_kicad` PASS after each commit); keep `tools/make_pcb.sh` as `exec tools/p2k/bin/p2k
+> make_pcb "$@"`.
+>
+> 1. **Bump** to the newest proteus2kicad main (≥ 2fb1563). Regenerate `reference/` (still through
+>    `tools/ipc356.py`): 2 lines of `reference/pin_nets_by_component.md` change (`Net aliases: none.`,
+>    `Index:` with `MV0 N6 P6`; D-R). No strict exception needed. Commit with the bump.
+> 2. **Migration** (byte-identical except D-K2 and R1):
+>    - `make_part_map.py` → `part_map.run` (`LATIN1 = True`, `CHECK_UNUSED_DEVICES`; local readers and
+>      `LATIN1_PARTS` dropped).
+>    - `gen_symbols.py`: `pin_types()` → `from_std(pin_types={"*": "passive"})`.
+>    - sheets: `place_mirrored` → `place(mirror=)`, `place_rot90_mirrored` → `place(..., 90, mirror="y")`,
+>      `term()` → `terminal(..., justify="away")`, `ph()` → `place(..., text="above", text_gap=3.175)`:
+>      **D-K2**: `kicad/01_*.kicad_sch` and `kicad/03_*.kicad_sch` change in 10 lines (Reference / Value angle
+>      of 5 rotated capacitors 0 → 270 / 90); render both sheets and check the texts are horizontal.
+>    - `check_sheets.sh` deleted → `p2k sheets --check`; `tools/compare.py` deleted → `p2k compare_netlists`;
+>      the `grep "(pin no_connect"` step may go (`no_connect_pin_type` is on by default); `tools/erc.sh` →
+>      `p2k erc`, `ERC_FATAL_WARNINGS = {"no_connect_connected", "footprint_link_issues"}`; the
+>      `PYTHONDONTWRITEBYTECODE` / `rm -rf __pycache__` lines may go (G1).
+>    - `gen_footprints.py`: `FP_LIB_TABLE = True`; `bottom=True`; the derive wrapper → spec `pads` /
+>      `pin1_dot=PIN1_DOT` (`ROUND_PAD1` → `pads`).
+>    - `check_pin_order.py` deleted → `PIN_ORDER` (15 entries: `spec=` + `polarity`, `G5V2_POLE1` computed
+>      in `p2k_config.py` from `IPC_PIN_IDS`, noval with `free_angle` and `other=1.0`, `turn="clockwise"`,
+>      SW4-6 `distances`), `PIN_ORDER_BOTTOM = {"U4", "U5"}`; negative tests.
+>    - `tools/ipc356.py` deleted → `tools/p2k/bin/p2k ipc356 --check` (shared `IPC_PIN_IDS`, same key and
+>      values; `reference/` identical).
+>    - `check_no_dangling.py` deleted → `DRC_EXPECTED_WARNINGS = {"track_dangling": 0, "via_dangling": 0}`.
+>    - `check_drill_smaller.py` deleted → `DRILL_SMALLER` pad sets (SERIES_MIX; C2; C4 / C6 / C7 / C32).
+>    - `excellon_metric.py` + `reference/fab_2010_drill_metric.drl` deleted (R1), `DRILL_EXCELLON =
+>      "source/fab_2010/poweri - CADCAM Drill.TXT"`; accepted: the `== excellon (…)` line of `roundtrip.txt`.
+>    - `make_pcb.sh` one-liner (default steps), `measure_gaps.py` deleted.
+> 3. **Strict opt-outs after migration: none.** STATUS.md: candidates → "solved in p2k <pin>", D-K2 and R1
+>    recorded. Commit, push.
+
+### 7.4 HV: `tube_hv_supplies_kicad`
+
+> You work in ~/dev/tube_hv_supplies_kicad. Task: migrate the board to the shared proteus2kicad tools, then
+> renumber the ribbon header J1 (coordinated with the control card J11). Read STATUS.md, PLAN.md,
+> tools/check_all.sh, then after the bump tools/p2k/README.md ("Changes"),
+> tools/p2k/CONVERSION_PLAYBOOK.md section 4 and tools/p2k/docs/CANDIDATES.md ("Decisions": D-I7, D-PIN,
+> ribbon; sections 5 and 7). Regenerate / verify as CANDIDATES.md section 7 "Common" says
+> (`~/dev/proteus2kicad/tools/regress.sh <pin> tube_hv_supplies_kicad` PASS after each commit); keep
+> `tools/make_pcb.sh` as `exec tools/p2k/bin/p2k make_pcb "$@"`.
+>
+> 1. **Bump** to the newest proteus2kicad main (≥ 2fb1563). `p2k ipc356`: `reference/pin_nets_by_component.md`
+>    1 line (`Index:` `REF1`) and `reference/pins_by_net.md` 4 lines (B+, GND, PREOUT, V_A: the two-hole
+>    terminals B_P, B_N, GND_PRE, GND_PWR, VPRE, V_ANODE listed once, counts −1 / −3 / −1 / −1): D-R. The
+>    default strict `roundtrip_counts` fails (B.Cu 401 KiCad draws vs 403: `remove_dot_tracks.py` removes the
+>    two OUT1 dot draws after gerber_to_tracks), so add temporarily `STRICT_CHECKS_OFF = {"roundtrip_counts":
+>    "B.Cu 401 vs 403 until the D-I7 migration"}`. Commit with the bump; check_all.sh passes.
+> 2. **Migration** (byte-identical except D-I7):
+>    - `make_part_map.py` → `part_map.run` (`LAYOUT = "dsn"`, `"LT1014": None` + `SYMBOL_BY_VALUE`,
+>      `OFF_BOARD` 2-tuples).
+>    - sheets: `place_mirrored` → `place(mirror=)`, `term()` → `terminal(..., justify="away")`, `_hcap()` and
+>      `si8271_cell` → `text_gap=3.81`.
+>    - `tools/erc.sh` → `p2k erc` (no keys); the check_all grep guard on `WARNING: name hint` goes (strict
+>      `net_names`, on by default).
+>    - `gen_footprints.py`: `FP_LIB_TABLE = True`; `_derive_pads` → spec `pads` (HV semantics). Keep the
+>      hand-written `_ProteusPads` specs (F8 does not reproduce their names).
+>    - `check_pin_order.py` deleted → `PIN_ORDER` (13 entries, `spec=`, two `mirror=None`); negative tests.
+>    - `check_proteus_pads.py` deleted → `tools/p2k/bin/kipy -m p2k.check_pads` with `PROTEUS_PADS_CHECK` =
+>      its `DECIDED` list.
+>    - `remove_dot_tracks.py` and its step deleted → `REMOVED_TRACKS[("B.Cu", -32.85196, -11.53736, -32.85196,
+>      -11.53737)] = ("OUT1: …", 2)`. **D-I7** accepted re-baseline: `kicad/tube_hv_supplies.kicad_pcb` (item
+>      order / UUIDs; sorted without UUIDs identical), `reports/assign_nets.txt` (orphan order),
+>      `reports/roundtrip/roundtrip.txt` ("3 Conductor draws (REMOVED_TRACKS)", Proteus 874 draws instead of
+>      876). **Remove the `roundtrip_counts` exception** (B.Cu 401 / 401 now).
+>    - `make_pcb.sh` one-liner (default `PCB_STEPS`), `measure_gaps.py` deleted.
+> 3. **J1 ribbon renumbering** (design commit, D-PIN; coordinate with the TC session, which renumbers J11
+>    the same way, so the cable still joins pad k to pad k): `IPC_PIN_IDS = {"J1": {str(k): str(k + 1 if k %
+>    2 else k - 1) for k in range(1, 41)}}`; footprint `PinHeader_2x20_P1.27mm_Vertical_ProteusPads` = the
+>    stock `Connector_PinHeader_1.27mm:PinHeader_2x20_P1.27mm_Vertical` with `ipc="J1"`, `ipc_sizes=True`,
+>    no renumbering (replaces `…_RowsSwapped_ProteusPads`); J1's symbol / sheet 5 with standard numbering
+>    (each net moves to the renamed pin), `PIN_ORDER` J1 entry: stock footprint fits unmirrored, residual 0;
+>    config comments naming J1 pins (e.g. `J1-7`) updated; `EXPECTED_IPC` unchanged (N/C J1-37 / J1-38 swap
+>    names). **Copper unchanged.** Square pad on the new pad 1: the instruction is "square pad on the new
+>    pad 1", but HV's J1 pads are all round by the user's Phase 5 decision (`pads={"2": circle}` today, the
+>    pad at KiCad's pin-1 position); keeping it round (`pads={"1": dict(shape="circle")}`) keeps the copper
+>    byte-identical, making it square is a one-pad copper change (round trip "pad shape", and
+>    `check_pads` fails on J1-1 unless that pad is exempted). **Ask the user which**, then apply. Expected
+>    changes: `reference/*` (J1 ids), `lib/` (footprint, map, symbol), sheet 5, the board file (J1 pad numbers),
+>    reports naming J1 pins; every check passes.
+> 4. **Strict opt-outs after migration: none.** STATUS.md candidates → "solved in p2k <pin>", D-I7 / D-PIN
+>    recorded. Commit, push.
+
+### 7.5 TC: `ti60f225_tube_control_card`
+
+> You work in ~/dev/ti60f225_tube_control_card. Task: migrate the board to the shared proteus2kicad tools,
+> then renumber the ribbon header J11 (coordinated with the HV supplies J1). Read STATUS.md, PLAN.md,
+> tools/check_all.sh, then after the bump tools/p2k/README.md ("Changes"), tools/p2k/CONVERSION_PLAYBOOK.md
+> section 4 and tools/p2k/docs/CANDIDATES.md ("Decisions": D-TC7b, D-PIN, ribbon; sections 5 and 7).
+> Regenerate / verify as CANDIDATES.md section 7 "Common" says (`~/dev/proteus2kicad/tools/regress.sh <pin>
+> ti60f225_tube_control_card` PASS after each commit); keep `tools/make_pcb.sh` as `exec tools/p2k/bin/p2k
+> make_pcb "$@"`.
+>
+> 1. **Bump** to the newest proteus2kicad main (≥ 2fb1563). `p2k ipc356` (through the unchanged wrappers):
+>    `reference/pin_nets_by_component.md` 2 lines (truncation `none`, `Index:` `AD2 ADC1 FLASH1 ISO5V OSC1
+>    V4`) and `reference/pins_by_net.md` 3 lines (12V, GND, OPAMP_-15V: J5-1, J4-1, J9-1 listed once): D-R.
+>    The default strict `derive_max_move` fails on two intended moves (the SO8W rows: RS1 pad 8 0.753 mm,
+>    FLASH1 0.985 mm; limit 0.635 = half the pitch): add `max_move=0.8` to the
+>    `SOIC-8_7.5x5.85mm_P1.27mm_Proteus` spec and `max_move=1.0` to `SOIC-8_5.3x5.3mm_P1.27mm_Proteus` in
+>    `tools/gen_footprints.py` (check only, no file changes; keeps the check on for every other footprint).
+>    Commit with the bump; check_all.sh passes (proven in p2k's batch-Z regression).
+> 2. **Migration** (batches 2-6, then 7b + 8 + 9 together; byte-identical except D-TC7b):
+>    - `make_part_map.py` → `part_map.run` (`LAYOUT = "ref"`, `SYMBOL_BY_VALUE` / `_REFDES` / `_PACKAGE`
+>      {RESISTOR ARRAY 2X1MM: R_ARRAY4} / `_PREFIX` {R, C, L}, `UNIT_PAGES`, `FIELDS` with `package`,
+>      `units`).
+>    - `gen_symbols.py`: `ti60_pinout()` → `pdsprj.dsn_pinouts(brace_optional=True)`; board `multi_box()` →
+>      `symgen.multi_box`.
+>    - sheets: `place_mirrored` → `place(mirror=)`, `term()` → `terminal(..., justify="away")`;
+>      `make_sheets.sh` → `p2k sheets --check`.
+>    - `erc.sh`, `erc_check.py`, `erc_pending.txt` deleted → `p2k erc`, `ERC_FATAL_WARNINGS =
+>      {"no_connect_connected"}` (no `ERC_PENDING`: the file was empty).
+>    - `gen_footprints.py`: `FP_LIB_TABLE = True`; the `smd_pad()` wrapper → spec key `smd_pad=(dia, side)`;
+>      optional `BOTTOM_THT = {"J3": …}`. Keep the hand-written `_ProteusPads` specs.
+>    - `check_pin_order.py` deleted → `PIN_ORDER` (20 entries, `rule=`, U10 `angle=180`); negative tests.
+>    - deleted: `ipc356_check.py`, `check_sources.py`, `pcb_wrap.py`, `compare_netlists.py`, `drc_check.py`,
+>      `phase4_wrap.py`, `check_drill_smaller.py`, `drc_pads.py`, `measure_gaps.py`; `SPLIT_PIN_NETS`
+>      dropped; keys `BGA_REFDES = "U10"`, `PHASE4_EXPECTED = dict(proteus=1132, kicad=1131, matched=1131,
+>      pads=884, nc=76, vias=239, holes=4, free=4, nets=227)` (its `EXPECT`), `DRILL_SMALLER` J8 pad set
+>      `{("J8", "1"), ("J8", "2"), ("J8", "3")}`; check_all steps on the shared tools (`p2k ipc356 --check`,
+>      `p2k check_sources`, `p2k compare_netlists`, `kipy -m p2k.check_board`, `kipy -m p2k.assign_nets
+>      --check`, `p2k drc`, `p2k ipc356_diff`, `p2k gerber_roundtrip --check`); `make_pcb.sh` one-liner
+>      (default steps, pours detected); `tools/test_no_connect.py` on `p2k compare_netlists` (`nc_joined` is
+>      on by default: no `STRICT_CHECKS`). Keep `tools/phase4_reading/`. **D-TC7b** accepted re-baseline:
+>      the 14 `accepted open` lines of `reports/assign_nets.txt` (`(D1, board-local)` → `(SPLIT_PIN_MERGES)`);
+>      nothing else changes.
+> 3. **J11 ribbon renumbering** (design commit, D-PIN; coordinate with the HV session, which renumbers J1
+>    the same way): `IPC_PIN_IDS = {"J11": {str(k): str(k + 1 if k % 2 else k - 1) for k in range(1, 41)}}`;
+>    footprint `PinHeader_2x20_P1.27mm_Vertical_ProteusPads` = the stock 2x20 1.27 mm header with
+>    `ipc="J11"`, `ipc_sizes=True`, no renumbering (replaces `…_RowsSwapped_ProteusPads`); the square pad is
+>    then pad 1 (it sits at KiCad's pin-1 position already: **copper unchanged**); J11's symbol / sheet 8 with
+>    standard numbering, `PIN_ORDER` J11 entries (rows-swapped / KiCad) → one entry: stock footprint fits
+>    unmirrored, residual 0; comments naming J11 pins updated. Expected changes: `reference/*` (J11 ids),
+>    `lib/`, sheet 8, the board file (J11 pad numbers), reports naming J11 pins; every check passes,
+>    `PHASE4_EXPECTED` unchanged.
+> 4. **Strict opt-outs after migration: none** (with the two `max_move` specs; without them it would be
+>    `STRICT_CHECKS_OFF = {"derive_max_move": "SO8W pad rows: RS1 0.753 mm, FLASH1 0.985 mm, intended"}`).
+>    STATUS.md candidates → "solved in p2k <pin>", D-TC7b / D-PIN recorded. Commit, push.
