@@ -8,7 +8,7 @@ fix-ups, expected counts, layer names, outline. See README.md for the keys.
     from p2k import board
     cfg = board.config()            # the p2k_config module
     board.path("reference")         # absolute path inside the board repo
-    board.strict("nc_joined")       # is this opt-in stricter check on (STRICT_CHECKS)?
+    board.strict("nc_joined")       # is this stricter check on (STRICT_CHECKS, STRICT_CHECKS_OFF)?
 
 The config is executed from its source on every first load (no bytecode is read or
 written), so an edit is never hidden by a stale __pycache__ entry with the same mtime and size.
@@ -54,8 +54,8 @@ def config():
     return _CFG
 
 
-# Ids of the implemented opt-in stricter checks (CANDIDATES.md section 2). Each batch that adds
-# a check adds its id here and to README.md; a board names the ids it wants in STRICT_CHECKS.
+# Ids of the implemented stricter checks (CANDIDATES.md section 2). Each batch that adds a check adds
+# its id here and to README.md.
 STRICT_IDS = frozenset({
     "no_connect_pin_type",   # check_symbols (S7)
     "nc_joined",             # compare_netlists (C2), ipc356_diff (R4)
@@ -68,26 +68,58 @@ STRICT_IDS = frozenset({
     "roundtrip_counts",      # gerber_roundtrip (R7)
 })
 
+# The ids that are on when a board does not set STRICT_CHECKS (decision D-Z, batch Z): every id the
+# finished tube boards pass after their migration. pad_extent and roundtrip_pad_match fail on every
+# board until its pad sizes are decided (KiCad library pads), so they stay opt-in: a board names
+# them in STRICT_CHECKS (or "all"). A new id joins the default only in a batch that says so.
+STRICT_DEFAULT = STRICT_IDS - {"pad_extent", "roundtrip_pad_match"}
+
 
 def strict_checks():
-    """The set of enabled strict check ids: config STRICT_CHECKS (a set / list / tuple of ids,
-    or "all" = every id in STRICT_IDS; default none). An unknown id is an error, so a typo or an
-    id of a check that this p2k commit does not have yet never passes silently."""
-    val = getattr(config(), "STRICT_CHECKS", set())
-    if isinstance(val, str):
-        val = {val}
-    val = set(val)
-    if "all" in val:
-        val = (val - {"all"}) | STRICT_IDS
+    """The set of enabled strict check ids.
+
+    STRICT_CHECKS absent: STRICT_DEFAULT. STRICT_CHECKS present: exactly those ids (a set / list /
+    tuple, or "all" = every id in STRICT_IDS; set() = none, the pre-D-Z behaviour).
+    STRICT_CHECKS_OFF = {id: reason}: the recorded exceptions of this board, removed from the set
+    above. Every id must be known, every reason a non-empty text, and every listed id must be on
+    without the entry (otherwise the entry is stale: remove it). An unknown id is an error in both
+    keys, so a typo or an id of a check that this p2k commit does not have never passes silently."""
+    cfg = config()
+    val = getattr(cfg, "STRICT_CHECKS", None)
+    if val is None:
+        val = set(STRICT_DEFAULT)
+    else:
+        if isinstance(val, str):
+            val = {val}
+        val = set(val)
+        if "all" in val:
+            val = (val - {"all"}) | STRICT_IDS
     unknown = val - STRICT_IDS
     if unknown:
         raise SystemExit(f"p2k: STRICT_CHECKS: unknown check id(s) {sorted(unknown)} "
                          f"(known: {sorted(STRICT_IDS) or 'none'})")
-    return val
+    off = getattr(cfg, "STRICT_CHECKS_OFF", None)
+    if off is None:
+        return val
+    if not isinstance(off, dict):
+        raise SystemExit("p2k: STRICT_CHECKS_OFF must be a dict {check id: reason}")
+    unknown = set(off) - STRICT_IDS
+    if unknown:
+        raise SystemExit(f"p2k: STRICT_CHECKS_OFF: unknown check id(s) {sorted(unknown)} "
+                         f"(known: {sorted(STRICT_IDS)})")
+    bad = sorted(k for k, r in off.items() if not isinstance(r, str) or not r.strip())
+    if bad:
+        raise SystemExit(f"p2k: STRICT_CHECKS_OFF: {bad}: give the reason as a text")
+    stale = sorted(set(off) - val)
+    if stale:
+        raise SystemExit(f"p2k: STRICT_CHECKS_OFF: {stale} not on for this board anyway "
+                         f"(not in STRICT_CHECKS / the default): remove the entry")
+    return val - set(off)
 
 
 def strict(check_id):
-    """True if the stricter check `check_id` is enabled for this board (STRICT_CHECKS)."""
+    """True if the stricter check `check_id` is enabled for this board (STRICT_CHECKS,
+    STRICT_CHECKS_OFF)."""
     if check_id not in STRICT_IDS:
         raise ValueError(f"p2k.board.strict: {check_id!r} is not in STRICT_IDS")
     return check_id in strict_checks()

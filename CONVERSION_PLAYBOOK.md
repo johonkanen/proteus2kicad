@@ -108,7 +108,7 @@ Preparation (one session):
    Only parts already drawn take part, so it works sheet by sheet. Multi-unit parts whose
    units sit on other pages: part-map column `units` (`A:2 B:5`); the pins of undrawn units
    are pending. Strict ids `nc_joined` (joined N/C pins fail) and `net_names` (a named net
-   under another name fails instead of a "name hint" warning): `STRICT_CHECKS`.
+   under another name fails instead of a "name hint" warning) are on by default.
    ERC: `p2k erc` fails on errors and on the warning types in `ERC_FATAL_WARNINGS` (typically
    `{"no_connect_connected", "footprint_link_issues"}`); `ERC_PENDING` holds errors expected
    while sheets are missing. ERC alone does not see a wire that reaches other pins only through
@@ -214,8 +214,9 @@ Done when: copper 0 shorts / 0 orphans / 0 opens after zone fill; DRC 0 shorts,
    `DRILL_SMALLER` (with a pad set: exactly those pads), `EXCELLON_MISSING` (drills missing
    from an older Excellon file), `STACKED_VIAS`, `PHASE4_EXPECTED` (summary counts), `PENDING`.
    `DRILL_EXCELLON` is read in its own unit (inch or metric). Strict ids: `nc_joined`,
-   `roundtrip_counts` (track draw counts per layer) and `roundtrip_pad_match` (every pad
-   flash has a counterpart of similar area; needs pad decisions first).
+   `roundtrip_counts` (track draw counts per layer; both on by default) and
+   `roundtrip_pad_match` (every pad flash has a counterpart of similar area; opt-in, needs pad
+   decisions first).
 3. Review: read the generating scripts, spot-check the easy-to-get-wrong places (thermal
    reliefs, floating non-conductor graphics, mounting holes, bottom-side parts, multi-pad
    pins, Kelvin parts, single-pin nets), confirm or refute every earlier finding.
@@ -291,8 +292,11 @@ script, keep or add the config key):
 | `drc_pads.py` | `p2k drc --by-refdes` | – |
 | `phase4_wrap.py` (counts) | `ipc356_diff`, `gerber_roundtrip` | `PHASE4_EXPECTED`, strict `roundtrip_counts` |
 
-Stricter checks are opt-in per id (`STRICT_CHECKS`, README.md); a board turns on every id it
-passes when it migrates.
+Stricter checks (README.md `STRICT_CHECKS`): the ids every finished tube board passes are on by
+default (`board.STRICT_DEFAULT`); a board that cannot pass one records the exception with a reason
+in `STRICT_CHECKS_OFF = {id: reason}` (an entry for an id that is off anyway fails, so the list
+stays minimal). `pad_extent` and `roundtrip_pad_match` are opt-in until a board has decided its
+pad sizes.
 
 Moving a tool: put it under `p2k/`, replace hard-coded board values by `p2k_config.py` keys
 (document them in README.md, footprint spec keys in the `footprints.py` docstring), grep for

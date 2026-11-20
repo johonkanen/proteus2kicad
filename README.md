@@ -23,6 +23,22 @@ Behaviour changes that make a finished board fail or re-baseline committed files
   run `p2k ipc356` and commit the regenerated `reference/*.md` with the bump (text only; the
   `.csv` / `.json` tables and every check are unchanged).
 
+- **Strict checks on by default (batch Z, decision D-Z).** Without a `STRICT_CHECKS` key a board
+  now runs the stricter checks of `board.STRICT_DEFAULT`: `no_connect_pin_type`, `nc_joined`,
+  `net_names`, `derive_max_move`, `hole_refdes`, `track_nets`, `roundtrip_counts` (before: none).
+  A finished board can start failing on the bump (e.g. a derived footprint whose pads move more
+  than half the pad pitch: `derive_max_move`; mounting holes named like schematic refdes:
+  `hole_refdes`). Upgrade, per failing id: fix the board (a spec `max_move` for an intended
+  pad move, `HOLE_START`, …) or record the exception in `p2k_config.py`:
+
+  ```python
+  STRICT_CHECKS_OFF = {"hole_refdes": "schematic has H4 / H5; HOLE_START migration pending"}
+  ```
+
+  The entry must name a check that is on (stale entries fail). The old behaviour in one line:
+  `STRICT_CHECKS = set()`. Older p2k commits ignore `STRICT_CHECKS_OFF`, so the key can be
+  added before the bump. Passing strict checks print to stdout only; no generated file changes.
+
 ## Use in a board repository
 
 Add as a submodule (pinned commit, so a tool change never silently changes a finished board):
@@ -161,7 +177,8 @@ Plain Python at the board repo root (no TOML: the system python3 may be < 3.11).
 | `REMOVED_VIAS` | gerber_to_tracks, check_board, ipc356_diff, gerber_roundtrip | optional `{(x, y): reason}` (IPC frame): Proteus vias deliberately not built; the checks expect no board via there (and fail if one is there) and drop its via pads / drill from the Proteus side |
 | `REFDES_PLACEMENT` | place_refdes | optional dict, mm: `sizes` (1.0, 0.8), `thickness_ratio` 0.15, `pad_gap` 0.1, `silk_gap` 0.1, `edge_gap` 0.5, `side_gap` 0.15 |
 | `ROUNDTRIP` | gerber_roundtrip | optional dict overriding `res` 0.025 (raster mm/px), `tol` 0.05, `min_area` 0.01 mm², `overlay_res` 0.1, `drill_tol` 0.005, `pad_area_tol` 0.25 (strict `roundtrip_pad_match`); the clearance and zone minimum width come from `PCB_RULES` (`clearance`, `min_track`) |
-| `STRICT_CHECKS` | every tool (`board.strict(id)`) | optional set of ids of opt-in stricter checks (default none; `"all"` = every implemented id). An unknown id is an error, so a typo never passes silently. Implemented ids: `no_connect_pin_type` (check_symbols), `nc_joined` (compare_netlists), `net_names` (compare_netlists), `derive_max_move` (footprints), `pad_extent` (check_footprints), `hole_refdes` (build_pcb), `track_nets` (check_board), `nc_joined` also in ipc356_diff, `roundtrip_pad_match`, `roundtrip_counts` (gerber_roundtrip); `docs/CANDIDATES.md` section 2 lists the planned ones. **Planned behaviour change (decision D-Z, a later batch):** the default becomes `"all"`, so every strict check runs on a board that does not set the key; a board keeps the old behaviour with `STRICT_CHECKS = set()` (or an explicit set of the ids it passes) in its `p2k_config.py` before it bumps to that p2k commit |
+| `STRICT_CHECKS` | every tool (`board.strict(id)`) | optional set of stricter check ids. **Absent = the default set** (since batch Z, decision D-Z): `no_connect_pin_type` (check_symbols), `nc_joined` (compare_netlists, ipc356_diff), `net_names` (compare_netlists), `derive_max_move` (footprints), `hole_refdes` (build_pcb), `track_nets` (check_board), `roundtrip_counts` (gerber_roundtrip) = `board.STRICT_DEFAULT`, every id the finished tube boards pass. Not in the default (opt-in by naming them, or `"all"` = every id): `pad_extent` (check_footprints) and `roundtrip_pad_match` (gerber_roundtrip), which fail on every board until its pad sizes are decided. Present = exactly these ids (`set()` = none, the behaviour before batch Z). An unknown id is an error, so a typo never passes silently. Prefer leaving it unset and recording exceptions in `STRICT_CHECKS_OFF`, so a board gets the checks that later batches add to the default; `docs/CANDIDATES.md` section 2 lists the ids |
+| `STRICT_CHECKS_OFF` | every tool (`board.strict(id)`) | optional `{check id: reason}`: the strict checks this board does not pass, removed from `STRICT_CHECKS` / the default (see "Changes" above). Every id must be known, every reason a non-empty text, and every listed id must be on without the entry (an entry for an id that is off anyway fails: remove it), so the list stays minimal. E.g. `{"hole_refdes": "schematic has H4 / H5; HOLE_START migration pending"}` |
 
 Coordinates are mm in the IPC / Gerber frame (Y up); KiCad (x, y) = (x, −y).
 
