@@ -1,7 +1,7 @@
 """Helpers for the per-sheet transcription scripts of a board (tools/sheets/sheetNN.py).
 
     from p2k.sheetkit import *       # Sheet, g, sheet, left/right/up/down, labels, power_at,
-                                     # bus_group, flagged_power, vert2, horiz2, terminal
+                                     # bus_group, flagged_power, vert2, horiz2, terminal, rail
     sh = sheet("11_startup.kicad_sch")
     c, top, bot = vert2(sh, "C", "C14", g(40), g(40), "4.7u")
     power_at(sh, "20V", top, "up"); power_at(sh, "GND", bot, "down")
@@ -21,9 +21,10 @@ def g(n):
     return round(n * G, 4)
 
 
-def sheet(fname):
-    """The sub-sheet kicad/<fname> of the board repo, cleared for a fresh rebuild."""
-    return Sheet(board.path("kicad", fname)).clear()
+def sheet(fname, **kw):
+    """The sub-sheet kicad/<fname> of the board repo, cleared for a fresh rebuild (keywords go to
+    Sheet, e.g. split_wires=True)."""
+    return Sheet(board.path("kicad", fname), **kw).clear()
 
 
 def left(p, n=2):
@@ -171,13 +172,33 @@ def horiz2(sh, sym, ref, x, y, value=None, left=1, **kw):
     return p, pins[0], pins[-1]
 
 
-def terminal(sh, ref, x, y, direction="up"):
-    """Proteus-style PIN terminal (symbol PIN of the project library) with its connection point at (x, y) and the
-    circle pointing in `direction`. Texts are kept horizontal beside the circle."""
+def terminal(sh, ref, x, y, direction="up", symbol="PIN", value="PIN", justify="legacy"):
+    """Proteus-style PIN terminal (symbol `symbol` of the project library, default PIN, value
+    `value`, default "PIN") with its connection point at (x, y) and the circle pointing in
+    `direction`. Texts are kept horizontal beside the circle. justify (left / right terminals):
+    "legacy" = the original justification (KiCad 10 draws the texts over the circle and wire),
+    "away" = the opposite justification, which draws them beside the circle, away from the wire
+    (the boards' former term())."""
+    if justify not in ("legacy", "away"):
+        raise ValueError(f"justify must be 'legacy' or 'away', not {justify!r}")
     rot = {"up": 0, "left": 90, "down": 180, "right": 270}[direction]
+    j_right, j_left = ("right", "left") if justify == "legacy" else ("left", "right")
     kw = {}
     if direction == "right":     # KiCad mirrors justification for rot 270: "right" draws left-justified
-        kw = dict(ref_at=(x + 5.08, y - 1.27, 90, "right"), value_at=(x + 5.08, y + 1.27, 90, "right"))
+        kw = dict(ref_at=(x + 5.08, y - 1.27, 90, j_right), value_at=(x + 5.08, y + 1.27, 90, j_right))
     elif direction == "left":
-        kw = dict(ref_at=(x - 5.08, y - 1.27, 270, "left"), value_at=(x - 5.08, y + 1.27, 270, "left"))
-    return sh.place("PIN", ref, x, y, rot, value="PIN", **kw)
+        kw = dict(ref_at=(x - 5.08, y - 1.27, 270, j_left), value_at=(x - 5.08, y + 1.27, 270, j_left))
+    return sh.place(symbol, ref, x, y, rot, value=value, **kw)
+
+
+def rail(sh, p, y=None, x=None, junction=True):
+    """Wire from point p straight to a rail: down / up to the horizontal rail at `y`, or left /
+    right to the vertical rail at `x` (give one), with a junction on the rail (junction=False:
+    none, e.g. at the rail's end). Returns the rail point."""
+    if (y is None) == (x is None):
+        raise ValueError("rail: give exactly one of y (horizontal rail) or x (vertical rail)")
+    q = (p[0], y) if y is not None else (x, p[1])
+    sh.wire(p, q)
+    if junction:
+        sh.junction(*q)
+    return q
