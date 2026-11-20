@@ -1,6 +1,8 @@
 # p2k candidates: inventory and consolidation plan
 
-Status (2026-11-20): batch 0 (regression harness, baseline; c72d909) and batch 1 (robustness fixes; 6cf43b1) done;
+Status (2026-11-20): batch 0 (regression harness, baseline; c72d909), batch 1 (robustness fixes; 6cf43b1),
+batch 2 (Proteus project reader and part map; 0b7a294) and batch 3 (symbols, netlist comparison, ERC;
+2686b4b) done;
 see "Status per entry" (section 5) and the regression record (section 6). Later sessions implement
 the rest batch by batch (section 3) and tick the entries off there. The prompt for the next
 session is at the end (section 7).
@@ -681,6 +683,9 @@ generators (`make_part_map.py`, `gen_symbols.py`, `tools/sheets/sheet*.py`, `gen
 | `roundtrip_counts` | R7 | track counts per layer differ |
 | `truncated_nets_keys` | I1 | a `TRUNCATED_NETS` key matches no restored refdes |
 
+Implemented (registered in `board.STRICT_IDS`): `no_connect_pin_type`, `nc_joined` (compare_netlists part;
+the ipc356_diff part R4 comes with batch 8), `net_names` (batch 3, 2686b4b).
+
 Keys whose presence is the opt-in (no strict id needed): `BOTTOM_THT`, `ERC_FATAL_WARNINGS`,
 `DRC_EXPECTED_WARNINGS`, `DRC_ACCEPTED_ITEMS`, `PENDING`, `EXCELLON_MISSING`, `SPLIT_PIN_MERGES`,
 `SMD_FREE_PADS`, `PROTEUS_PADS`, the pad-set form of `DRILL_SMALLER`.
@@ -872,6 +877,22 @@ All three were answered on 2026-11-20 (section "Decisions": D-R, D-Z, D-AC). Kep
 | R8 "without a net" | 1 | **done** (6cf43b1): PA "142 pads incl. 0 N/C and 4 without a net"; a no-net pad moved to a net in the KiCad export: "pad U6-6: no net in Proteus, KiCad net B-" (was "N/C in Proteus"). The summary line is unchanged on boards without no-net pads (TC's `phase4_wrap.py` parses it) |
 | R9 `gerber_roundtrip.main` returns | 1 | **done** (6cf43b1): `--check` with errors exits 1, without `--check` 0; PR `roundtrip.py` (`sys.exit(gr.main())`) and TC `phase4_wrap.py` pass in the regression |
 
+| P1 Latin-1 strings | 2 | **done** (0b7a294): `latin1=False` keyword on `dsn_values`, `lyt_parts`, `dsn_devices`, `_strings`; with `True` bytes 0xA0-0xFF are decoded and `lyt_parts` strips a trailing 0xFF of a net token (PF's reader). Default byte-identical on all seven boards (dsn_values / lyt_parts / dsn_pinouts compared old vs new with each board's refdes set). With `True`: PA C5 `10µ/400V` (value, device, record), PR C4 `MMK J04 1µ`, C14 `1µ mmk`, C30 `22µ`, C28 / C33-C37 `22µF 450V` (value + layout record), PF C1 / C36 / C37: exactly the `LATIN1_PARTS` texts of the boards. Negative: PA / PR part map without `LATIN1` → "C5: no layout record in ROOT.LYT" / 9 errors |
+| P2 one-character refdes | 2 | **done** (0b7a294): cause found: every COMPONENT ID label is preceded by its font record `0xFF 0x01 "Default Font\0"`, which `pstr` reads as the string "D", so a refdes `D` matched every part. A one-character refdes is now accepted only in the refdes slot (first string before the font record, the font record skipped); the LYT keeps one-character tokens when a one-character refdes is requested (PF's `_strings(min_len=1)`). Only boards with such refdes see a change (PR: old raised "several schematic values" for D, new A-D = TERMINAL; PF: old lyt_parts raised "two layout records for -6", new = PF's local reader). Negative: without the font skip PR raises again; synthetic DSN with an "A" string before a part not in refs: old misattributes (raises), new reads only the real A record |
+| P3 layouts without EID | 2 | **done** (0b7a294): `dsn_devices(prj, refs, latin1=False)` (HV `dsn_devices`, unchanged rules, shared refdes search) and `lyt_parts_ref(prj, refs, values)` (TC `lyt_packages`, returns `{ref: {"package"}}`); HV / TC part maps identical through them |
+| P4 pinouts | 2 | **done** (0b7a294): `dsn_pinouts(brace_optional=True)` (TC regex, `PIN` lines without `{`, pin value = element list); TC `ti60_pinout()` on it gives the same 225 balls (8 copies) and `lib/tube_control_card.kicad_sym` byte-identical; default mode still 0 pins for BGA225. New `dsn_device_pins(prj)`: per `{*DEVICE}` block (4-byte text length before it) the device name (length-prefixed string after the previous block's text; after the last 0xFFFE marker for the first; the library ends where no record follows, later `{*DEVICE}` texts are component properties), DESC, default package, `$PIN*` records `(kind, name, number)` with one-character names, `pinouts`, `numbers` (package pinout overrides the symbol number). Checked: PA TIPL760 B1 C2 E3, MPSA92 E1 B2 C3, 1N4001 A K; PF 12AX7 `numbers` A1=1 A2=6 H1=4 (symbol A1=6); every device named on all boards. Note: PA 1650TA has 7 pin records (P1 P2 S2-S5 CT), no S1 |
+| M1 `p2k.part_map` | 2 | **done** (0b7a294): `part_map.run(SPEC)`, SPEC keys in the module docstring. Migration proven in scratch for all six boards (`--check` against the committed `lib/part_map.csv`, text-identical): PSU (`PART_OVERRIDES` = its `FITTED_VALUES`, `PAGE_CHECK=False`: C91 has no PDF text), PA (`LATIN1`, `OFF_BOARD` 3-tuples; `LATIN1_PARTS` dropped), PR (`LATIN1`; `SINGLE_LETTER_PARTS` and `LATIN1_PARTS` dropped), PF (`LATIN1`, `CHECK_UNUSED_DEVICES`; local readers and `LATIN1_PARTS` dropped), HV (`LAYOUT="dsn"`, `"LT1014": None` + `SYMBOL_BY_VALUE`, `OFF_BOARD` 2-tuples), TC (`LAYOUT="ref"`, `SYMBOL_BY_VALUE` / `_REFDES` / `_PACKAGE` {RESISTOR ARRAY 2X1MM: R_ARRAY4} / `_PREFIX` {R, C, L}, `UNIT_PAGES`, `FIELDS` with `package`, `units`). Negative tests: stale override ("pdsprj reads value '10µ/400V' itself, drop the entry"), unknown override refdes, OFF_BOARD part with pads, override page not among the PDF hits, missing page override, unknown device, device mapped to None without a value symbol, unused device (PF), TC without the prefix map, bad UNIT_PAGES refdes, unknown FIELDS / spec key, wrong LAYOUT, PSU without its override → "out of date" |
+| S1 `from_std(pin_types=)` | 3 | **done** (2686b4b): `{number or "*": type}` after the renumbering, every listed number must exist (assert). PA `pin_types()`, PF `pin_types()` (`{"*": PAS}`) → keyword: libraries byte-identical (scratch clone, regenerate, clean status). PA keeps its `add_pins()` (not a candidate) |
+| S2 `from_std(units=, hide_pin_names=)` | 3 | **done** (2686b4b): `units={new: old}` (unknown or colliding units assert), `hide_pin_names=True` (PR's node). PR `swap_units()` / `hide_pin_names()` / `pin_types()` → keywords: library byte-identical |
+| S3 `multi_box` | 3 | **done** (2686b4b): TC's function, `desc=""` and box options as keywords; TC library byte-identical with the board copy deleted |
+| S4 `box(pin_length=)` | 3 | **done** (2686b4b): default 2.54 gives the identical node; 5.08 moves the pin ends out by 2.54 and sets the length |
+| S5 `box(tb_margin=)` | 3 | **done** (2686b4b): extra body height beyond one grid row on a side with top / bottom pins (None = the name-based rule); `tb_margin=0` makes a VCCA-on-top box 7.62 mm shorter |
+| S7 strict `no_connect_pin_type` | 3 | **done** (2686b4b): check_symbols fails per on-board part with a `no_connect`-type pin. PA, PR, PF, HV, TC pass with the id; **PSU fails** (DRV5 / DRV6 SI8275 pins 7, 12, 13; L1-L3 RM8_INDUCTOR pins 1, 2): before D-Z PSU fixes those symbols (passive + no-connect flag) or records an opt-out |
+| C2 strict `nc_joined` | 3 | **done** (2686b4b): compare_netlists fails on an `unconnected-(…)` net with more than one pin (counted before the off-board / power filter, as the wrappers). Negative: PF netlist with SERIES_MIX pads 4 and 6 in one unconnected net → without the id "compare: OK", with it "KiCad net unconnected-(SERIES_MIX-Pad4) joins 2 pins" (PF's wrapper reports the same pair). PR, PF, PA, HV pass with the id; TC passes through its D1 wrapper. R4 (ipc356_diff part) stays in batch 8 |
+| C3 per-unit pages | 3 | **done** (2686b4b): part-map column `units`; pins of a unit that is not drawn are warnings ("pending pin U10-R4 …: unit B on sheet 5 not drawn") with `--allow-missing` or a `--sheet` other than the unit's page, errors otherwise (as missing parts); a split IPC net counts the page of such pins as pending. Test: TC netlist without the 23 unit-B pins: `--sheet 2` / `--allow-missing` → OK with 23 warnings (old p2k: 23 errors), no option or `--sheet 5` → 23 errors. Finished boards unchanged (TC has the column) |
+| C4 strict `net_names` | 3 | **done** (2686b4b): a name hint becomes an error "net name: KiCad net … = IPC net …". Negative: PF netlist with HYPPY2 renamed → warning without, error with the id. PA, PR, PF, HV, TC (wrapper) pass with it; HV can drop its `check_all.sh` grep guard |
+| E1 `p2k erc` | 3 | **done** (2686b4b): `ERC_FATAL_WARNINGS`, `ERC_PENDING` (TC's `"type REF PIN"` keys), `--no-pending`, report `reports/erc.rpt`. Same verdict as the board `erc.sh` on PSU, HV (no keys), PA (`{"no_connect_connected"}`), PR, PF (`+ "footprint_link_issues"`), TC (`{"no_connect_connected"}`, empty `ERC_PENDING` = its empty `erc_pending.txt`). Negative: PF without `kicad/fp-lib-table` → 89 FATAL WARNING footprint_link_issues, exit 1; synthetic report: error fails, fatal warning fails, matching pending entry passes, stale pending entry fails. AC keeps its `erc.sh` (D-AC) |
+
 Every other entry: open.
 
 ## 6. Regression record
@@ -916,17 +937,43 @@ same board commits at c5682dd for the stdout diff): ALL BOARDS PASS at 6cf43b1.
 
 No other stdout line and no generated file changed.
 
+**Batch 2, p2k 0b7a294, and batch 3, p2k 2686b4b, 2026-11-20** (`tools/regress.sh -j 4 <commit>
+<board>@<HEAD> ...` on the board commits recorded at the start of the session; batch 2 compared with
+95610dc, batch 3 with 0b7a294 on the same commits): ALL BOARDS PASS at both commits.
+
+| Board | HEAD | 0b7a294 | 2686b4b | stdout vs previous p2k (same HEAD) |
+|---|---|---|---|---|
+| tube_psu_kicad | 842d301 | PASS | PASS | identical |
+| tube_power_amp_kicad | 18de7a9 | PASS | PASS | identical |
+| tube_preamp_kicad | b2adf22 | PASS | PASS | identical |
+| tube_pi_fxloop_kicad | da551f3 | PASS | PASS | identical |
+| tube_hv_supplies_kicad | 6cb1d3f | PASS | PASS | identical |
+| ti60f225_tube_control_card | d2a4f66 | PASS | PASS | identical, except one KiCad DRC `unconnected` item text that differs between runs (track length 1.5649 / 1.5935 mm of Net-(RS1-B): KiCad picks another track pair; not p2k) |
+| ac_psu_kicad | 559175a (pin 32f8fd3) | PASS | PASS | identical |
+
+The board scripts were not changed, so these runs prove the defaults. The migrations (part maps,
+symbol libraries, compare wrappers, `erc.sh`) were proven separately in scratch clones (section 5).
+PSU (89608a5) and AC (0a71dd3) got new commits during the session; they are not in this record.
+
 ## 7. Next batch: prompt for the next session
 
-> You work in ~/dev/proteus2kicad (main). Task: batch 2 of docs/CANDIDATES.md (P1-P4 in
-> `p2k/pdsprj.py`, new `p2k/part_map.py` = M1). Read CANDIDATES.md first (section 0 rules,
-> "Decisions", section 3 batch 2, sections 5-6 for what is done), README.md and
-> CONVERSION_PLAYBOOK.md section 4. Every change: no key, no change (defaults byte-identical on all
-> boards), negative-tested, documented in README.md. Regression: commit, then
-> `tools/regress.sh -j 4 <commit>` (all seven boards, scratch clones only); diff the per-board logs
-> against a run of the previous p2k commit on the same `<board>@<HEAD>` list to review stdout
-> changes. Do NOT commit anything in a board repo (pins are bumped later in one coordinated step);
-> migrations of the board `make_part_map.py` scripts are only proven in scratch (`lib/part_map.csv`
-> identical) and recorded here. Board repos get commits from parallel agents: record the HEADs you
-> test. Commit and push in proteus2kicad, update sections 5-6, and replace this prompt with the
-> one for batch 3.
+> You work in ~/dev/proteus2kicad (main). Task: batch 4 of docs/CANDIDATES.md (schematic drawing:
+> K1, K2, K3, K7 in `p2k/sch_builder.py`, K4, K5 in `p2k/sheetkit.py`, K8 `p2k sheets`), then batch 5
+> (footprints: F1-F8 in `p2k/footprints.py`, CF1-CF3 in `p2k/check_footprints.py`, the free-angle fit
+> in `p2k/fpgeom.py`) the same way if batch 4 is committed and green. Read CANDIDATES.md first
+> (section 0 rules, "Decisions" D-R / D-Z / D-AC / D-PIN, section 3 batches 4-5, sections 5-6 for
+> what is done), README.md and CONVERSION_PLAYBOOK.md section 4. Every change: no key, no change
+> (defaults byte-identical on all boards), strict checks register a `board.STRICT_IDS` id (opt-in),
+> negative-tested, documented in README.md (footprint spec keys also in the `footprints.py`
+> docstring). Batch 4 carries the highest risk for AC and PSU (both call `terminal()` and
+> `Sheet.place`): their sheets must stay byte-identical. Regression: commit, record the board HEADs,
+> then `tools/regress.sh -j 4 <commit> <board>@<HEAD> ...` (all seven boards, scratch clones only)
+> and the previous p2k commit on the same list; diff the per-board logs (TC's DRC `unconnected` item
+> text varies between runs). Prove each board migration in a scratch clone (`git clone` of the board,
+> `tools/p2k` symlinked to this repo, regenerate, clean `git status`): `_common.py` helpers
+> (`place_mirrored`, `place_rot90_mirrored`, `term()`, `hcap` / `ph` / `_hcap`) → shared parameters,
+> every `kicad/*.kicad_sch` identical; TC `make_sheets.sh` / PF `check_sheets.sh` → `p2k sheets
+> --check`. Do NOT commit anything in a board repo (pins are bumped later in one coordinated step).
+> A cosmetic change that would alter committed `reference/*.md` goes to batch R (D-R). Commit and
+> push after each batch in proteus2kicad, update sections 5-6, and replace this prompt with the one
+> for the following batch.
