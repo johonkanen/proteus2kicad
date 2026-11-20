@@ -208,8 +208,12 @@ def main():
         sys.exit(1)
     pcbnew.SaveBoard(out, board)
     extra = f", {len(free)} free pads" if free else ""
+    # nets whose every node is on a part excluded from the board (off-board parts) are in the
+    # netlist and the board's net list, but no pad carries them
+    off = sum(1 for nodes in nets.values()
+              if nodes and all(comps.get(ref, {}).get("excluded") for ref, _ in nodes))
     print(f"build_pcb: {placed} footprints placed ({skipped} excluded from board), {len(holes)} mounting holes{extra}, "
-          f"{len(nets)} nets, {edges} outline segments -> {pcb.rel(out)}")
+          f"{len(nets) - off} nets{f' (+{off} off-board)' if off else ''}, {edges} outline segments -> {pcb.rel(out)}")
 
 
 if __name__ == "__main__":

@@ -695,13 +695,13 @@ def main(argv=None, in_area=None, extra_vias=None):
         print("roundtrip: Proteus objects not compared (recorded deviations, all layers): "
               + ", ".join(f"{v} {k}" for k, v in sorted(tot.items())))
     print(f"roundtrip: drills {len(drill_errors)} mismatches{extra}; report {rel_out}/roundtrip.txt, overlays {rel_out}/*.png")
-    for e in drill_errors[:10]:
+    for e in drill_errors:
         print("roundtrip: ERROR " + e)
     ok = other == 0 and missing == 0 and not drill_errors
     print("roundtrip: " + ("OK" if ok else f"FAILED ({other} unexplained clusters, {missing} draws/flashes without copper "
                                             f"in the other set, {len(drill_errors)} drill mismatches)"))
-    sys.exit(0 if ok or not args.check else 1)
+    return 0 if ok or not args.check else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

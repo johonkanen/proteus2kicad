@@ -45,9 +45,9 @@ footprint rules and project footprints, `lib/`, `reference/`, `kicad/`, `reports
 | `ipc356` | IPC-D-356A → `reference/ipc356_pads.{json,csv}`, `pin_nets_by_component.md`, `pins_by_net.md`; `--check` = counts + fix-ups + files up to date | python3 |
 | `check_sources` | Gerber X2 export vs IPC: via / component / free / SMD pad flashes and drills 1:1, one `SameCoordinates` id, outline | python3 |
 | `check_symbols` | every refdes of `lib/part_map.csv`: symbol pin set = IPC pin set; power symbols are IPC nets | python3 |
-| `compare_netlists` | KiCad schematic netlist vs IPC by pad sets (`--sheet N`, `--allow-missing` while drawing) | python3, kicad-cli |
+| `compare_netlists` | KiCad schematic netlist vs IPC by pad sets (`--sheet N`, `--allow-missing` while drawing; schematic `--schematic`, else `$P2K_SCHEMATIC`, else `kicad/<PROJECT>.kicad_sch`); type-safe natural sort (refdes `SEND` next to `SEND1`); the net counts leave out N/C / no-net pins (printed separately) | python3, kicad-cli |
 | `make_skeleton` | one-shot: KiCad project, sym-lib-table, root sheet with one sub-sheet per PDF page | python3, AppImage |
-| `footprints` | library for the board's `tools/gen_footprints.py`: `run(RULES, PROJECT)` assigns a footprint to every IPC part (symbol + pad pattern rules), writes `lib/footprint_map.csv` and `lib/<PROJECT>.pretty` (project footprints derived from KiCad footprints or built from the IPC pads – optionally with a `body_poly` outline, e.g. from the Proteus silk –, plus `board_only` one-pad footprints for mounting holes / free pads); rule conditions incl. `refdes` (rules for named parts only); `--check` | python3, AppImage mount |
+| `footprints` | library for the board's `tools/gen_footprints.py`: `run(RULES, PROJECT)` assigns a footprint to every IPC part (symbol + pad pattern rules), writes `lib/footprint_map.csv` and `lib/<PROJECT>.pretty` (project footprints derived from KiCad footprints or built from the IPC pads – optionally with a `body_poly` outline, e.g. from the Proteus silk –, plus `board_only` one-pad footprints for mounting holes / free pads); rule conditions incl. `refdes` (rules for named parts only); a part no rule matches is reported once; `--check` | python3, AppImage mount |
 | `check_footprints` | every symbol's footprint vs the IPC pads: pads matched by number, rigid fit (residual < 0.05 mm), `reports/footprint_fit.csv` (placement for Phase 3) and `footprint_pads.csv`; `--pcbnew` re-measures after placing with pcbnew | python3 (`kipy -m p2k.check_footprints --pcbnew` for pcbnew) |
 | `render_sheet` | schematic sheet → PNG (kicad-cli SVG + librsvg/cairo) | python3, kicad-cli |
 | `board` | board root and config lookup | library |
@@ -58,15 +58,15 @@ footprint rules and project footprints, `lib/`, `reference/`, `kicad/`, `reports
 | `sexpr`, `geom2d`, `gerber`, `fpgeom`, `sch_builder` | s-expressions, 2-D geometry, Gerber X2 reader, footprint fit, schematic writer | library |
 
 | `pcb` | Phase 3 library: board / schematic / reports paths (config, `P2K_PCB` / `P2K_SCHEMATIC` / `P2K_REPORTS`, or `configure()` from a board wrapper, which can also filter the IPC records), kicadxml netlist export, IPC → KiCad net map | library |
-| `build_pcb` | board from the schematic netlist: footprints with nets and symbol links at the `footprint_fit.csv` positions, layers, rules, outline, board-only mounting holes and free pads | `kipy -m p2k.build_pcb` |
+| `build_pcb` | board from the schematic netlist: footprints with nets and symbol links at the `footprint_fit.csv` positions, layers, rules, outline, board-only mounting holes and free pads; the printed net count leaves out nets that are only on off-board parts (shown as "+n off-board") | `kipy -m p2k.build_pcb` |
 | `gerber_to_tracks` | copper gerbers → tracks (pour edge strokes skipped), vias (flash size + drill; stacked duplicates merged), NonConductor graphics, pour outlines on the User layers; every pad flash / drill must land on a footprint pad | `kipy -m p2k.gerber_to_tracks` |
 | `assign_nets` | union-find over the copper: nets for tracks / vias / pours (`reports/pour_nets.json`), shorts / orphans / opens; `--check` repeats on the saved board after zone fill | `kipy -m p2k.assign_nets [--check]` |
 | `pours_to_zones` | Proteus pours (region + stroke − clear holes) → filled zones | `kipy -m p2k.pours_to_zones` |
 | `check_board` | saved board vs IPC: pads, mounting holes, free pads, vias (position, size, net 1:1), every copper item has a net; `main(added=, extra_vias=)` for later design revisions | `kipy -m p2k.check_board` |
 | `place_refdes` | references on the silk clear of pads / silk / board edge (kept if clear, else moved around the courtyard box, else a smaller size, else Fab layer only); a `make_pcb` step after the board is complete | `kipy -m p2k.place_refdes` |
 | `drc` | `kicad-cli pcb drc --schematic-parity`: fails on shorts, unconnected, parity and error types not in `DRC_ACCEPTED` | `p2k drc` |
-| `ipc356_diff` | Phase 4: `kicad-cli pcb export ipcd356` of the board vs the Proteus IPC-D-356A: every pad / via / hole / free pad matched within 0.05 mm, side, THT/SMD, plating, drill (KiCad larger OK, smaller only per `DRILL_SMALLER`), nets 1:1 by pad sets, N/C equal, stacked via records (`STACKED_VIAS`); `main(added=, extra_vias=)` for later revisions | `p2k ipc356_diff` |
-| `gerber_roundtrip` | Phase 4: KiCad copper gerbers + drills vs the Proteus gerbers: raster XOR per layer with tolerance, difference clusters classified (pad shape / clearance / zone fill / deviation / other = finding), centre-line coverage of every draw and flash both ways, plated + non-plated drills (stacked records, `DRILL_SMALLER`), optional Excellon cross-check (`DRILL_EXCELLON`); `reports/roundtrip/` report + overlay PNGs; `--check` fails on other / uncovered / drill mismatch; `main(in_area=, extra_vias=)` | `p2k gerber_roundtrip [--check]` (numpy, scipy, PIL) |
+| `ipc356_diff` | Phase 4: `kicad-cli pcb export ipcd356` of the board vs the Proteus IPC-D-356A: every pad / via / hole / free pad matched within 0.05 mm, side, THT/SMD, plating, drill (KiCad larger OK, smaller only per `DRILL_SMALLER`), nets 1:1 by pad sets, N/C equal (pads without a net are counted and named as such, not as N/C), stacked via records (`STACKED_VIAS`); `main(added=, extra_vias=)` for later revisions, returns the exit code | `p2k ipc356_diff` |
+| `gerber_roundtrip` | Phase 4: KiCad copper gerbers + drills vs the Proteus gerbers: raster XOR per layer with tolerance, difference clusters classified (pad shape / clearance / zone fill / deviation / other = finding), centre-line coverage of every draw and flash both ways, plated + non-plated drills (stacked records, `DRILL_SMALLER`), optional Excellon cross-check (`DRILL_EXCELLON`); `reports/roundtrip/` report + overlay PNGs; `--check` fails on other / uncovered / drill mismatch (every drill error printed); `main(in_area=, extra_vias=)` returns the exit code (`python -m` exits with it) | `p2k gerber_roundtrip [--check]` (numpy, scipy, PIL) |
 
 The board repo runs the PCB steps in its `tools/make_pcb.sh` (build_pcb, gerber_to_tracks,
 assign_nets, pours_to_zones). `erc.sh`, `check_all.sh` and `make_pcb.sh` stay in each board
@@ -113,12 +113,18 @@ Plain Python at the board repo root (no TOML: the system python3 may be < 3.11).
 | `REMOVED_VIAS` | gerber_to_tracks, check_board, ipc356_diff, gerber_roundtrip | optional `{(x, y): reason}` (IPC frame): Proteus vias deliberately not built; the checks expect no board via there (and fail if one is there) and drop its via pads / drill from the Proteus side |
 | `REFDES_PLACEMENT` | place_refdes | optional dict, mm: `sizes` (1.0, 0.8), `thickness_ratio` 0.15, `pad_gap` 0.1, `silk_gap` 0.1, `edge_gap` 0.5, `side_gap` 0.15 |
 | `ROUNDTRIP` | gerber_roundtrip | optional dict overriding `res` 0.025 (raster mm/px), `tol` 0.05, `min_area` 0.01 mm², `overlay_res` 0.1, `drill_tol` 0.005; the clearance and zone minimum width come from `PCB_RULES` (`clearance`, `min_track`) |
+| `STRICT_CHECKS` | every tool (`board.strict(id)`) | optional set of ids of opt-in stricter checks (default none; `"all"` = every implemented id). An unknown id is an error, so a typo never passes silently. Implemented ids: none yet (`docs/CANDIDATES.md` section 2 lists the planned ones) |
 
 Coordinates are mm in the IPC / Gerber frame (Y up); KiCad (x, y) = (x, −y).
 
+`board.config()` executes `p2k_config.py` from its source (no bytecode is read or written), so an
+edit is seen even when a stale `__pycache__` entry has the same mtime and size. Environment
+overrides: `P2K_BOARD` (board root), `P2K_PCB`, `P2K_SCHEMATIC` (also the default of
+`compare_netlists --schematic`), `P2K_REPORTS`.
+
 ## Developing p2k: regression run
 
-`tools/regress.sh [-j N] [-k] [-o DIR] [COMMIT] [BOARD ...]` tests a proteus2kicad commit
+`tools/regress.sh [-j N] [-k] [-o DIR] [COMMIT] [BOARD[@REV] ...]` tests a proteus2kicad commit
 (default HEAD; commit first, unpushed is fine) against the board repos under `~/dev`
 (`$REGRESS_BOARDS_DIR`): per board a scratch clone at the board's HEAD with `tools/p2k` at
 COMMIT (bump committed in the scratch clone only), every generated file regenerated with the

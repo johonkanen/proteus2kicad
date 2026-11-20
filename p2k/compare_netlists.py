@@ -10,6 +10,8 @@ the pin comparison, so the check is meaningful while sheets are still missing.
   p2k compare_netlists --netlist x.xml    # use an existing kicadxml netlist
   p2k compare_netlists --allow-missing    # missing parts do not fail the check
 
+The schematic is --schematic, else $P2K_SCHEMATIC, else kicad/<PROJECT>.kicad_sch.
+
 Errors (non-zero exit): pins on the wrong net (merged or split nets; a split is only a
 warning while the IPC net still has pins on parts that are not drawn yet), pins
 connected in KiCad that are N/C in Proteus (and vice versa), missing/extra pins,
@@ -33,11 +35,14 @@ NC, NONET = "N/C", "(no net)"
 
 
 def natkey(s):
-    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", str(s))]
+    """Natural sort key. Every token is a (kind, number, text) tuple, so a number never meets a
+    text (SEND next to SEND1 in pinkey); the order is the plain [text, int, text, ...] order
+    wherever that one did not raise."""
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", str(s))]
 
 
 def pinkey(rp):
-    return natkey(rp[0]) + ["-"] + natkey(rp[1])
+    return natkey(rp[0]) + [(1, 0, "-")] + natkey(rp[1])
 
 
 def fmt(pins, limit=12):
@@ -204,9 +209,10 @@ def compare(comps, k_pin_net, ipc_pin_net, part_map, sheet=None, allow_missing=F
             warnings.append(f"name hint: KiCad net {kn} = IPC net {ig[0]} ({fmt(pins, 4)})")
 
     complete = sum(1 for ig, pins in by_ipc.items() if len(pins) == ipc_size[ig])
+    nc_pins = sum(1 for ig in by_ipc if ig[1] is not None)   # N/C and no-net pins: singleton groups
     stats = {"ipc_parts": len(ipc_refs), "present": len(present), "missing_in_scope": len(missing),
              "extra": len(extra), "pins_compared": len(common), "wrong_pins": len(wrong),
-             "ipc_nets_touched": len(by_ipc), "ipc_nets_complete": complete}
+             "ipc_nets_touched": len(by_ipc), "ipc_nets_complete": complete, "nc_pins": nc_pins}
     return errors, warnings, info, stats
 
 
@@ -224,7 +230,9 @@ def sheet_summary(k_refs, part_map):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--schematic", default=board.path("kicad", f"{board.config().PROJECT}.kicad_sch"))
+    env = os.environ.get("P2K_SCHEMATIC")   # as the PCB tools (p2k.pcb)
+    ap.add_argument("--schematic", default=os.path.abspath(env) if env else
+                    board.path("kicad", f"{board.config().PROJECT}.kicad_sch"))
     ap.add_argument("--netlist", help="existing kicadxml netlist (skip export)")
     ap.add_argument("--sheet", type=int, help="limit the missing-part report to this PDF page")
     ap.add_argument("--allow-missing", action="store_true", help="missing parts are warnings, not errors")
@@ -245,7 +253,9 @@ def main():
     print(f"compare: parts {st['present']}/{st['ipc_parts']} present, {st['missing_in_scope']} missing"
           f"{f' on sheet {args.sheet}' if args.sheet else ''}, {st['extra']} extra; "
           f"pins compared {st['pins_compared']}, wrong-net pins {st['wrong_pins']}; "
-          f"IPC nets touched {st['ipc_nets_touched']}, complete {st['ipc_nets_complete']}")
+          f"IPC nets touched {st['ipc_nets_touched'] - st['nc_pins']}, "
+          f"complete {st['ipc_nets_complete'] - st['nc_pins']}"
+          + (f" (+ {st['nc_pins']} N/C / no-net pins)" if st["nc_pins"] else ""))
     print(f"compare: per sheet (drawn/total) {sheet_summary(k_refs, part_map)}")
     for w in warnings:
         if w.startswith("missing parts") and not args.verbose and not args.sheet:

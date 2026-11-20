@@ -245,13 +245,14 @@ def main(argv=None, added=None, extra_vias=None):
             drill_larger[(p["drill"], round(r["drill"], 3))] += 1
         # nets
         p_nc = p["net_raw"] == "N/C" or not p["net"]
+        nc_word = "N/C" if p["net_raw"] == "N/C" else "no net"   # a pad without a net is not "N/C"
         if p["kind"] == "hole":
             if not kicad_unconnected(r["net"]):
                 errors.append(f"{what}: mounting hole on KiCad net {r['net']}")
         elif p_nc:
             if not kicad_unconnected(r["net"]):
-                errors.append(f"{what}: N/C in Proteus, KiCad net {r['net']}")
-            stats["N/C pads"] += 1
+                errors.append(f"{what}: {nc_word} in Proteus, KiCad net {r['net']}")
+            stats["N/C pads" if nc_word == "N/C" else "no-net pads"] += 1
         elif kicad_unconnected(r["net"]):
             errors.append(f"{what}: Proteus net {p['net']}, KiCad unconnected ({r['net']})")
         elif mapping.get(p["net"]) != r["net"]:
@@ -264,11 +265,12 @@ def main(argv=None, added=None, extra_vias=None):
 
     extra = f", {stats['free_pad']} free pads" if stats["free_pad"] else ""
     st = f" ({len(stacked)} stacked duplicate via records on matched vias)" if stacked else ""
+    nonet = f" and {stats['no-net pads']} without a net" if stats["no-net pads"] else ""
     if removed:
         print(f"ipc356_diff: {len(removed)} Proteus via records removed as recorded (REMOVED_VIAS): "
               + ", ".join(f"({p['x_mm']}, {p['y_mm']}) {p['net']}" for p in removed))
     print(f"ipc356_diff: Proteus {len(prot)} records, KiCad {len(kic)}; matched {len(pairs) + len(stacked)} "
-          f"({stats['pad']} pads incl. {stats['N/C pads']} N/C, {stats['via']} vias{st}, {stats['hole']} holes{extra}), "
+          f"({stats['pad']} pads incl. {stats['N/C pads']} N/C{nonet}, {stats['via']} vias{st}, {stats['hole']} holes{extra}), "
           f"worst position offset {worst:.3f} mm (limit {TOL})")
     print(f"ipc356_diff: {len(mapping)} Proteus nets mapped 1:1 onto KiCad nets, "
           f"{len(errors)} mismatches")

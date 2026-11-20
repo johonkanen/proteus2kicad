@@ -2,10 +2,12 @@
 # Regression run for a proteus2kicad commit over the board repos (CANDIDATES.md G2, playbook
 # section 4). Developer script: it never changes a board repo.
 #
-#   tools/regress.sh [-j N] [-k] [-o DIR] [COMMIT] [BOARD ...]
+#   tools/regress.sh [-j N] [-k] [-o DIR] [COMMIT] [BOARD[@REV] ...]
 #
 #   COMMIT  proteus2kicad commit to test (default: HEAD of this repo; unpushed commits work)
-#   BOARD   board repo names under $REGRESS_BOARDS_DIR (default ~/dev); default: all seven
+#   BOARD   board repo names under $REGRESS_BOARDS_DIR (default ~/dev); default: all seven.
+#           BOARD@REV clones that board commit instead of its HEAD (e.g. to rerun another p2k
+#           commit on the same board commits and diff the logs)
 #   -j N    boards run in parallel (default 1)
 #   -k      keep the scratch clones (printed at the end)
 #   -o DIR  write the per-board logs to DIR (default: a new temporary directory, printed, kept)
@@ -63,10 +65,12 @@ regen() {
 
 run() { echo "-- $*"; "$@" || { echo "!! regen step FAILED: $*"; rfail=1; }; }
 
-one_board() {   # $1 = board name; prints one summary line; full log in $logdir/$1.log
-    local b=$1 src="$BOARDS_DIR/$1" dst="$scratch/$1" log="$logdir/$1.log" head pin rfail=0 ok=1 t0=$SECONDS
+one_board() {   # $1 = board name[@rev]; prints one summary line; full log in $logdir/<name>.log
+    local b=${1%%@*} rev=HEAD
+    [ "$b" = "$1" ] || rev=${1#*@}
+    local src="$BOARDS_DIR/$b" dst="$scratch/$b" log="$logdir/$b.log" head pin rfail=0 ok=1 t0=$SECONDS
     {
-        head="$(git -C "$src" rev-parse HEAD)" || { echo "regress: $src is not a git repo"; return 1; }
+        head="$(git -C "$src" rev-parse "$rev^{commit}")" || { echo "regress: no commit $rev in $src"; return 1; }
         git clone -q "$src" "$dst" && cd "$dst" && git checkout -q "$head" \
             && git submodule -q init tools/p2k && git config submodule.tools/p2k.url "$P2K_REPO" \
             && git -c protocol.file.allow=always submodule -q update tools/p2k \
@@ -100,11 +104,12 @@ one_board() {   # $1 = board name; prints one summary line; full log in $logdir/
 echo "regress: proteus2kicad $commit, boards: $boards, logs: $logdir"
 for b in $boards; do
     while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do wait -n; done
-    one_board "$b" > "$logdir/$b.result" &
+    one_board "$b" > "$logdir/${b%%@*}.result" &
 done
 wait
 fail=0
 for b in $boards; do
+    b=${b%%@*}
     cat "$logdir/$b.result"
     grep -q " PASS " "$logdir/$b.result" || fail=1
 done

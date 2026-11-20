@@ -148,6 +148,7 @@ def assign(rules, added=None):
     off_board = getattr(board.config(), "OFF_BOARD_PARTS", {})
     out, errors = {}, []
     used_rule = {}
+    no_rule = set()
     for ref in sorted(ipc):
         if ref not in pm:
             errors.append(f"{ref}: in the IPC file but not in lib/part_map.csv")
@@ -158,6 +159,7 @@ def assign(rules, added=None):
         if not hits:
             errors.append(f"{ref}: no footprint rule for {sym} (n={f['n']} tht={f['tht']} span={f['span']:.2f} "
                           f"pads={sorted(f['pads'])} drills={sorted(f['drills'])})")
+            no_rule.add(ref)
             continue
         out[ref] = (hits[0][2], hits[0][3])
         used_rule.setdefault(id(hits[0]), set()).add(ref)
@@ -171,7 +173,7 @@ def assign(rules, added=None):
             errors.append(f"{ref}: added part missing from lib/part_map.csv")
         out[ref] = (p["footprint"], p.get("note", "added part"))
     for ref in sorted(pm):
-        if ref not in out and ref not in off_board:
+        if ref not in out and ref not in off_board and ref not in no_rule:   # no_rule: reported above
             errors.append(f"{ref}: in lib/part_map.csv but has no IPC pads (list it in OFF_BOARD_PARTS "
                           "or pass it as an added part)")
     return out, errors
