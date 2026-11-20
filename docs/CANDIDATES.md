@@ -1,6 +1,6 @@
 # p2k candidates: inventory and consolidation plan
 
-Status (2026-11-20): batch 0 (regression harness, baseline) and batch 1 (robustness fixes) done;
+Status (2026-11-20): batch 0 (regression harness, baseline; c72d909) and batch 1 (robustness fixes; 6cf43b1) done;
 see "Status per entry" (section 5) and the regression record (section 6). Later sessions implement
 the rest batch by batch (section 3) and tick the entries off there. The prompt for the next
 session is at the end (section 7).
@@ -861,6 +861,16 @@ All three were answered on 2026-11-20 (section "Decisions": D-R, D-Z, D-AC). Kep
 | G2 regression harness | 0 | **done**: `tools/regress.sh` (README "Developing p2k: regression run") |
 | AC pin 32f8fd3 → c5682dd | 0 | **done in scratch only**: AC's `check_all.sh` and `regen_check.sh` pass at c5682dd with AC's committed files unchanged (section 6). The bump itself is committed later, in the coordinated pin step |
 | baseline, all seven boards at c5682dd | 0 | **done**, green (section 6) |
+| G1 config without bytecode | 1 | **done** (6cf43b1): `board.config()` compiles and executes the source; negative test: same-size edit with the mtime reset after a load that left a `.pyc` → old code read the stale value (VAL = 1), new reads VAL = 2 |
+| `board.strict()` / `STRICT_CHECKS` | 1 | **done** (6cf43b1): `strict_checks()`, `strict(id)`, `STRICT_IDS` (empty: no strict check implemented yet; each batch adds its id); `"all"`; an unknown id in the config fails ("unknown check id(s) ['nc_joind']"), an unregistered id in code raises |
+| C1 type-safe natkey / pinkey | 1 | **done** (6cf43b1): order identical to the old keys on 19914 random pairs where those did not raise; the old keys raised on 86, the new ones sort them; `compare()` with SEND + SEND1 drawn: old TypeError, new reports the merge / split. Migration (PR, PF): drop `natkey` / `pinkey` from `tools/compare.py`, keep the joined-N/C part until batch 3 |
+| C5 `P2K_SCHEMATIC` default | 1 | **done** (6cf43b1): with the variable set to a missing file the export fails on that file (exit 1); a relative value from another directory works ("compare: OK") |
+| C6 net counts without N/C pins | 1 | **done** (6cf43b1), stdout: PA "IPC nets touched 43, complete 43 (+ 4 N/C / no-net pins)" (was 47) |
+| F10 one message per unmatched part | 1 | **done** (6cf43b1): PA with its first rule dropped: 19 "no footprint rule" lines, the 19 duplicate "has no IPC pads" lines are gone |
+| B14 build_pcb net count | 1 | **done** (6cf43b1), stdout: PA "47 nets (+6 off-board)" (was 53) |
+| R6 all drill errors printed | 1 | **done** (6cf43b1): PA with `DRILL_SMALLER = {}`: 12 ERROR lines (was 10) |
+| R8 "without a net" | 1 | **done** (6cf43b1): PA "142 pads incl. 0 N/C and 4 without a net"; a no-net pad moved to a net in the KiCad export: "pad U6-6: no net in Proteus, KiCad net B-" (was "N/C in Proteus"). The summary line is unchanged on boards without no-net pads (TC's `phase4_wrap.py` parses it) |
+| R9 `gerber_roundtrip.main` returns | 1 | **done** (6cf43b1): `--check` with errors exits 1, without `--check` 0; PR `roundtrip.py` (`sys.exit(gr.main())`) and TC `phase4_wrap.py` pass in the regression |
 
 Every other entry: open.
 
@@ -890,3 +900,33 @@ so the clean-status step is what catches it). Found while writing the harness: a
 the scratch clone; the harness now unsets `P2K_BOARD` / `P2K_PCB` / `P2K_SCHEMATIC` /
 `P2K_REPORTS`. PF regenerates `reference/` through its wrapper `tools/ipc356.py`
 (`IPC_PIN_IDS`), so the harness uses a board's `tools/ipc356.py` when it exists.
+
+**Batch 1, p2k 6cf43b1, 2026-11-20** (`tools/regress.sh -j 4 6cf43b1 <board>@<HEAD> ...`, then the
+same board commits at c5682dd for the stdout diff): ALL BOARDS PASS at 6cf43b1.
+
+| Board | HEAD | Result at 6cf43b1 | stdout vs c5682dd (same HEAD) |
+|---|---|---|---|
+| tube_psu_kicad | 842d301 | PASS | compare counts (C6), ipc356_diff "9 N/C and 6 without a net" (R8) |
+| tube_power_amp_kicad | 18de7a9 | PASS | build_pcb "47 nets (+6 off-board)" (B14), compare (C6), ipc356_diff (R8) |
+| tube_preamp_kicad | b2adf22 | PASS | compare counts (C6) |
+| tube_pi_fxloop_kicad | da551f3 | PASS | compare counts (C6) |
+| tube_hv_supplies_kicad | 23284f8 | PASS | compare counts (C6) |
+| ti60f225_tube_control_card | d2a4f66 | PASS | compare counts (C6) |
+| ac_psu_kicad | 559175a (pin 32f8fd3) | PASS | compare counts (C6; AC uses `p2k.compare_netlists` through its v4 wrapper) |
+
+No other stdout line and no generated file changed.
+
+## 7. Next batch: prompt for the next session
+
+> You work in ~/dev/proteus2kicad (main). Task: batch 2 of docs/CANDIDATES.md (P1-P4 in
+> `p2k/pdsprj.py`, new `p2k/part_map.py` = M1). Read CANDIDATES.md first (section 0 rules,
+> "Decisions", section 3 batch 2, sections 5-6 for what is done), README.md and
+> CONVERSION_PLAYBOOK.md section 4. Every change: no key, no change (defaults byte-identical on all
+> boards), negative-tested, documented in README.md. Regression: commit, then
+> `tools/regress.sh -j 4 <commit>` (all seven boards, scratch clones only); diff the per-board logs
+> against a run of the previous p2k commit on the same `<board>@<HEAD>` list to review stdout
+> changes. Do NOT commit anything in a board repo (pins are bumped later in one coordinated step);
+> migrations of the board `make_part_map.py` scripts are only proven in scratch (`lib/part_map.csv`
+> identical) and recorded here. Board repos get commits from parallel agents: record the HEADs you
+> test. Commit and push in proteus2kicad, update sections 5-6, and replace this prompt with the
+> one for batch 3.
