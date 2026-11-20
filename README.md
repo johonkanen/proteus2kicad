@@ -115,3 +115,16 @@ Plain Python at the board repo root (no TOML: the system python3 may be < 3.11).
 | `ROUNDTRIP` | gerber_roundtrip | optional dict overriding `res` 0.025 (raster mm/px), `tol` 0.05, `min_area` 0.01 mm², `overlay_res` 0.1, `drill_tol` 0.005; the clearance and zone minimum width come from `PCB_RULES` (`clearance`, `min_track`) |
 
 Coordinates are mm in the IPC / Gerber frame (Y up); KiCad (x, y) = (x, −y).
+
+## Developing p2k: regression run
+
+`tools/regress.sh [-j N] [-k] [-o DIR] [COMMIT] [BOARD ...]` tests a proteus2kicad commit
+(default HEAD; commit first, unpushed is fine) against the board repos under `~/dev`
+(`$REGRESS_BOARDS_DIR`): per board a scratch clone at the board's HEAD with `tools/p2k` at
+COMMIT (bump committed in the scratch clone only), every generated file regenerated with the
+board's own scripts (`p2k ipc356`, `make_part_map.py`, `gen_symbols.py`, the sheet scripts,
+`gen_footprints.py`, `check_footprints --pcbnew`, `excellon_metric.py`, `make_pcb.sh`), then
+`tools/check_all.sh`, then a clean `git status`. `ac_psu_kicad` runs its own `check_all.sh` and
+`regen_check.sh`. Board repos are never changed. Per-board logs (`-o DIR`) can be diffed between
+two commits to review stdout changes. The playbook (section 4) and `docs/CANDIDATES.md`
+(section 3) say when to run it.

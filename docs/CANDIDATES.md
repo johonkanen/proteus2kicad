@@ -1,7 +1,9 @@
 # p2k candidates: inventory and consolidation plan
 
-Status: **plan only** (2026-11-20). Nothing here is implemented yet. Later sessions implement it
-batch by batch (section 3) and tick the entries off here.
+Status (2026-11-20): batch 0 (regression harness, baseline) and batch 1 (robustness fixes) done;
+see "Status per entry" (section 5) and the regression record (section 6). Later sessions implement
+the rest batch by batch (section 3) and tick the entries off there. The prompt for the next
+session is at the end (section 7).
 
 Sources: the "## p2k candidates" section of `STATUS.md` in the five board repos converted with
 p2k `c5682dd`, and their board-local workarounds in `tools/`. `tube_psu_kicad` and `ac_psu_kicad`
@@ -41,6 +43,23 @@ have no candidate list; tube_psu contributes code (`tools/measure_gaps.py`, `too
    names and its exact checks (e.g. "the set of pins equals the table, both ways"), so a migration
    is "delete the wrapper, keep the config".
 5. **Regression per batch:** see section 3, "Regression set".
+
+## Decisions (user, 2026-11-20, through the coordinating session)
+
+- **D-R (batch R, report text fixes):** yes. When the cosmetic `ipc356` report fixes (I3, I4, I5)
+  land, the committed `reference/*.md` files of the affected boards are re-baselined, in a later
+  batch; each board's re-baseline is its own reviewed commit.
+- **D-Z (batch Z, strict defaults):** yes. At the end, the strict checks become ON by default
+  (`STRICT_CHECKS` default = every id); a board that needs an exception records it in its
+  `p2k_config.py`.
+- **D-AC (regression set):** `tube_psu_kicad` + the five tube boards are the regression set, plus
+  `ac_psu_kicad` for the modules it uses (section 3). `ac_psu_kicad` is **not** switched to the
+  shared Phase 2-4 tools.
+- **D-PIN (new feature, design entry I6, PCB batch 7a):** an IPC pin-renumber config key, applied
+  in one place in `p2k.ipc356` so every check sees it, for the HV supplies J1 and control card J11
+  ribbon headers (odd / even rows swapped in Proteus): the pads get standard numbering, the copper
+  is unchanged. Key name and semantics are those of PF's board-local `IPC_PIN_IDS` (PF candidate
+  24), so PF's migration is a wrapper deletion. Implemented in its batch, not now.
 
 ## 1. Deduplicated candidates
 
@@ -210,7 +229,9 @@ Design: optional `units` column in `lib/part_map.csv` (`A:2 B:5 …`, already wr
 `UNIT_PAGES`). When it exists, `--sheet N` / `--allow-missing` treat the pins of units on undrawn
 sheets as pending (warnings), like missing parts. Without the column, behaviour is unchanged.
 
-**C4. Strict net-name mode.** B, strict id `net_names`. Source: HV27.
+**C4. Strict net-name mode.** B, strict id `net_names`. Source: HV27 (since the 2026-11-20 label
+renames HV's `check_all.sh` fails on any `WARNING: name hint` board-locally: a dropped
+`NET_ALIASES` entry otherwise passed every check; that guard is this mode's migration).
 Design: fail when a KiCad net that is not auto-named (`Net-(`, `unconnected-(`) matches an IPC net
 that is not `#00xxx` under another name, after `NET_ALIASES`. Today this is a "name hint" warning.
 
@@ -417,8 +438,11 @@ Design: config key `DRC_ACCEPTED_ITEMS = {type: {item pattern: reason}}` (patter
 violation's item texts). Each entry must match at least one violation (stale entries fail), and
 each pattern says how many items it matches (`count=`). `DRC_ACCEPTED` stays per type.
 
-**B8. DRC warning counts not enforced.** B. Sources: PA25, PF23.
+**B8. DRC warning counts not enforced.** B. Sources: PA25, PF23, PF25 (second half).
+Board code: PF `tools/check_no_dangling.py` (fails on any `track_dangling` / `via_dangling` item in
+`reports/drc.json`; added with the design fixes that removed the dangling stubs).
 Design: config key `DRC_EXPECTED_WARNINGS = {type: count}`. When present, counts must match.
+`{"track_dangling": 0, "via_dangling": 0}` replaces PF's script (its migration).
 
 **B9. Pending user decisions as a tool state.** B. Sources: PA22, HV16, HV22, PF17, TC28.
 Board code: PA `tools/phase4_checks.py` (now with `PENDING_DRILLS = False`, a pass-through); TC
@@ -448,7 +472,13 @@ every pad-to-track gap (HV19, KiCad reports only the closest pad).
 Board code: `tools/make_pcb.sh` in all seven repos (seven variants).
 Design: steps from config `PCB_STEPS` (default `["build_pcb", "gerber_to_tracks", "assign_nets",
 "place_refdes"]`, plus `pours_to_zones` for boards with pours). Steps are chained so that the first
-failure stops the run (TC26: `set -e` does not act inside `run() || …`). `--check` builds in
+failure stops the run (TC26, PF25: `set -e` does not act inside `run() || …`, so in the template's
+`--check` mode a failing gerber_to_tracks let the later steps run on and the filtered log hid its
+ERROR line; the step still failed, but only as "not up to date"). The shared `make_pcb` must stop
+on the first failing step and print that step's full output.
+Per-board fix (for the migration step of each board, or earlier as a board commit): PA and PSU
+still have the unchained `run()` of the pilot template; chain the steps with `&&` (TC, PF, PR and
+HV already do: TC26, PF25, HV29). `--check` builds in
 `build/tmp` and compares. Comes last in the PCB chain, after B1 / B4 / B5 remove the board-local
 steps (`rename_holes.py`, `pcb_wrap.py`).
 
@@ -529,7 +559,53 @@ cosmetic. Sources: PA2, PR4, PF1, HV1, TC5.
 
 These three change the committed `reference/pin_nets_by_component.md` / `pins_by_net.md` of
 several boards (PA, PR, PF and TC print "." today; I5 may touch AC and PSU), so they break
-rule 1. They wait for batch R and a user decision (section 4).
+rule 1. They wait for batch R (user decision D-R: re-baseline, each board its own commit).
+
+**I6. IPC pin renumbering (`IPC_PIN_IDS`).** A (B for the shared key). Sources: user decision D-PIN
+(HV J1, TC J11 ribbon headers: Proteus numbers the odd / even rows swapped), PF24 (relay
+SERIES_MIX: Proteus G5V-2(HI) pads 1-8 → Omron pin numbers).
+Board code: PF `p2k_config.py` `IPC_PIN_IDS` + `tools/ipc356.py` (wraps `ipc356.parse`, renames
+after parsing; used instead of `p2k ipc356` in PF's `check_all.sh`).
+Design:
+- Config key `IPC_PIN_IDS = {KiCad refdes: {Proteus pin: KiCad pad}}` (PF's name and semantics),
+  applied in `p2k.ipc356.parse` right after the records are read and refdes / nets are fixed up,
+  so `reference/ipc356_pads.*`, the cheat sheets and every check that reads them (check_symbols,
+  compare_netlists, footprints, check_footprints, check_board, pcb / build_pcb, ipc356_diff,
+  gerber_roundtrip, check_pin_order) see the KiCad pad numbers. It is applied in exactly one place,
+  like `NET_ALIASES` / `KICAD_REFDES`.
+- Checks (PF wrapper semantics, rule 4): every listed refdes exists; the listed Proteus pins equal
+  the IPC pins of that refdes, both ways (every pad renamed, only those); the targets are unique.
+  Positions, nets and all other fields stay as Proteus wrote them; the copper is unchanged.
+- Phase 4 (`ipc356_diff`) reads the Proteus side through `p2k.ipc356`, so it compares with the
+  renamed ids; the KiCad side has the standard numbering. Decide in the batch whether to keep the
+  Proteus id in an extra field (`pin_proteus`; PF24 notes that `FIELDS` does not allow one today).
+  If the field changes the committed `reference/ipc356_pads.csv` / `.json`, it is only written
+  when the key is present (rule 1).
+- Without the key: byte-identical. Migration: PF deletes `tools/ipc356.py` (reference/ identical);
+  HV J1 and TC J11 get the key with their footprints / symbols renumbered in the same board commit
+  (a design change of those boards, reviewed there).
+
+**I7. `REMOVED_TRACKS`: direction-exact match and a count per entry.** C (+ B for the count).
+Sources: TC34, HV28 (design fixes 2026-11-20).
+`p2k.pcb.removed_track` matches an entry in either direction (0.001 mm). A zero-length or
+back-and-forth Proteus draw and its reverse (TC), or one segment drawn twice (HV: two zero-length
+OUT1 draws), cannot be listed: two entries cannot be told apart (both draws match the first entry),
+one entry matches two draws, and gerber_to_tracks fails ("2 listed, found 3 draws").
+Board code: TC `tools/pcb_wrap.py` patch 5 (`patch_removed_track`: an entry in the drawn direction
+within 1e-6 mm first, then the shared matcher); HV `REMOVED_DOT_TRACKS` + `tools/remove_dot_tracks.py`
+(removes the listed identical draws with an exact count).
+Design (one `REMOVED_TRACKS` design for both):
+- Matching: an entry in the drawn direction (1e-6 mm) first, then today's direction-free match.
+- Optional count: the value may be `(reason, n)`: the entry must match exactly n draws (identical
+  draws, either direction after the exact pass). The plain `reason` form means exactly one draw,
+  as today.
+- Every mismatch fails: an entry that matches no draw or another number of draws than its count, a
+  draw matched by two entries. gerber_to_tracks and gerber_roundtrip use the same matcher.
+- On by default for the direction-exact pass (a board that would need it fails today; with single
+  entries both directions still match as now); the count is opt-in by its value form. Batch 7a.
+- Migration: TC drops patch 5; HV moves `REMOVED_DOT_TRACKS` into `REMOVED_TRACKS` with a count
+  and deletes `tools/remove_dot_tracks.py` (board file identical). (TC34 also notes that its
+  board-local `check_drill_smaller.py` had to learn `REMOVED_VIAS`: covered by R3's pad sets.)
 
 ### 1.9 Infrastructure, docs and playbook
 
@@ -584,9 +660,9 @@ generators (`make_part_map.py`, `gen_symbols.py`, `tools/sheets/sheet*.py`, `gen
 
 | Class | n | Entries |
 |---|---|---|
-| A | 21 | M1 S1 S2 S3 K1 K4 K8 E1 F1 F2 F4 F5 F7 F11 CP1 B1 B11 B12 B13 R2 R3 |
+| A | 22 | M1 S1 S2 S3 K1 K4 K8 E1 F1 F2 F4 F5 F7 F11 CP1 B1 B11 B12 B13 R2 R3 I6 |
 | B | 34 | P3 S4 S5 S6 S7 K2 K3 K5 K6 K7 K9 C2 C3 C4 F3 F6 F8 F9 CF1 CF2 CF3 B4 B5 B6 B7 B8 B9 B10 R4 R5 R7 R10 I2 G2 (deferred / low: S6 K5 K6 K9 F9 R10 I2) |
-| C | 19 | P1 P2 P4 C1 C5 C6 F10 B2 B3 B14 R1 R6 R8 R9 I1 I3 I4 I5 G1 (P4 and R1 have a B / A part) |
+| C | 20 | P1 P2 P4 C1 C5 C6 F10 B2 B3 B14 R1 R6 R8 R9 I1 I3 I4 I5 I7 G1 (P4 and R1 have a B / A part) |
 | D | 1 | G3 (eight playbook rules) |
 | X | 8 | X1-X8 |
 
@@ -703,9 +779,11 @@ Keys whose presence is the opt-in (no strict id needed): `BOTTOM_THT`, `ERC_FATA
 Batch 7 is split into three commits, each regression-tested.
 
 **7a** (default-on fixes and holes)
-- Files: `pcb.py` (B2, B1 keying), `build_pcb.py` (B1), `gerber.py` / `check_sources.py` /
-  `gerber_to_tracks.py` (B3).
-- Migration: PR `rename_holes.py` removed (`HOLE_START = 101`, board file identical).
+- Files: `pcb.py` (B2, B1 keying, I7), `build_pcb.py` (B1), `gerber.py` / `check_sources.py` /
+  `gerber_to_tracks.py` (B3), `ipc356.py` (I6 `IPC_PIN_IDS`).
+- Migration: PR `rename_holes.py` removed (`HOLE_START = 101`, board file identical); TC
+  `pcb_wrap.py` patch 5 and HV `remove_dot_tracks.py` removed (I7); PF `tools/ipc356.py` removed (I6, reference/ identical);
+  HV J1 / TC J11 renumbered with `IPC_PIN_IDS` (board design commits).
 
 **7b** (TC features)
 - Files: `ipc356.py`, `check_sources.py`, `pcb.py`, `gerber_to_tracks.py`, `assign_nets.py`,
@@ -737,7 +815,7 @@ Batch 7 is split into three commits, each regression-tested.
   `bin/p2k make_pcb` (B12).
 - Migration: `tools/measure_gaps.py` deleted in PSU, PA, PR, PF, HV, TC. `tools/make_pcb.sh` →
   `p2k make_pcb` with `PCB_STEPS` once a board has no board-local step left. The board file must
-  be identical in both modes.
+  be identical in both modes. Until then PA and PSU chain their `run()` steps with `&&` (B12).
 
 ### Batch 10: docs
 
@@ -746,16 +824,17 @@ Batch 7 is split into three commits, each regression-tested.
 
 ### Batch R (needs the user): report text fixes
 
-- Files: `p2k/ipc356.py` (I3, I4, I5); later batches can add cosmetic report changes here.
+- Decided (D-R): re-baseline. Files: `p2k/ipc356.py` (I3, I4, I5); later batches can add cosmetic
+  report changes here.
 - These deliberately change committed `reference/*.md` files. Each board commits the
   re-generated files together with the bump. For AC this is an exception to the "committed files
   unchanged" rule, and only if I5 touches AC.
 
 ### Batch Z (needs the user): flip strict defaults
 
-When every board has either opted in to all strict ids or recorded an opt-out, the default of
-`STRICT_CHECKS` becomes `"all"` (new boards get the checks automatically), and boards keep explicit
-opt-outs.
+Decided (D-Z): when every board has either opted in to all strict ids or recorded an opt-out, the
+default of `STRICT_CHECKS` becomes `"all"` (new boards get the checks automatically), and boards
+keep explicit opt-outs in their config.
 
 ### Deferred (no batch yet)
 
@@ -763,6 +842,8 @@ S6, K6, K9, F9, I2, R10, and the B11 extensions (KiCad-geometry gaps, all pad-to
 They are picked up when a board needs them.
 
 ## 4. Open questions for the user
+
+All three were answered on 2026-11-20 (section "Decisions": D-R, D-Z, D-AC). Kept for the record:
 
 1. **Report text fixes (batch R):** re-baseline the committed `reference/*.md` of PA / PR / PF / TC
    (and AC / PSU if `pins_by_net.md` changes), or leave the cosmetic issues as they are?
@@ -772,3 +853,40 @@ They are picked up when a board needs them.
    tools, so it does not exercise `footprints`, the PCB chain or Phase 4. Is the six-board set
    (PSU + five) acceptable as the regression for those modules, or should AC be switched to the
    shared tools first (the playbook's "switch its scripts to the moved tool")?
+
+## 5. Status per entry
+
+| Entry | Batch | Status |
+|---|---|---|
+| G2 regression harness | 0 | **done**: `tools/regress.sh` (README "Developing p2k: regression run") |
+| AC pin 32f8fd3 → c5682dd | 0 | **done in scratch only**: AC's `check_all.sh` and `regen_check.sh` pass at c5682dd with AC's committed files unchanged (section 6). The bump itself is committed later, in the coordinated pin step |
+| baseline, all seven boards at c5682dd | 0 | **done**, green (section 6) |
+
+Every other entry: open.
+
+## 6. Regression record
+
+`tools/regress.sh` runs; HEAD = the board commit cloned (board repos move on in parallel, so a
+later run may use newer HEADs). PASS = regenerate + `check_all.sh` + clean `git status`
+(AC: its `check_all.sh` + `regen_check.sh` + clean status).
+
+**Batch 0 baseline, p2k c5682dd, 2026-11-20** (`tools/regress.sh -j 4 c5682dd`): ALL BOARDS PASS.
+
+| Board | HEAD | Committed pin | Result |
+|---|---|---|---|
+| tube_psu_kicad | 6f97fae | c5682dd | PASS (91 s) |
+| tube_power_amp_kicad | d842156 | c5682dd | PASS (59 s) |
+| tube_preamp_kicad | b2adf22 | c5682dd | PASS (95 s) |
+| tube_pi_fxloop_kicad | da551f3 | c5682dd | PASS (69 s) |
+| tube_hv_supplies_kicad | 1ab2658 | c5682dd | PASS (48 s) |
+| ti60f225_tube_control_card | d2a4f66 | c5682dd | PASS (56 s) |
+| ac_psu_kicad | 559175a | **32f8fd3** (tested at c5682dd) | PASS (396 s) |
+
+Harness negative test: a throwaway p2k commit on c5682dd that changed one heading of
+`reference/pin_nets_by_component.md` → `tube_power_amp_kicad` FAIL ("working tree differs:
+M reference/pin_nets_by_component.md"; note that `check_all.sh` alone passes after a regenerate,
+so the clean-status step is what catches it). Found while writing the harness: an exported
+`P2K_BOARD` made AC's `regen_check.sh` (whose `make_skeleton --force` runs in a copy) write into
+the scratch clone; the harness now unsets `P2K_BOARD` / `P2K_PCB` / `P2K_SCHEMATIC` /
+`P2K_REPORTS`. PF regenerates `reference/` through its wrapper `tools/ipc356.py`
+(`IPC_PIN_IDS`), so the harness uses a board's `tools/ipc356.py` when it exists.
