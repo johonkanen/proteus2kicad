@@ -1510,3 +1510,15 @@ Common to every prompt (repeated in each, so each can be pasted alone):
 > 4. **Strict opt-outs after migration: none** (with the two `max_move` specs; without them it would be
 >    `STRICT_CHECKS_OFF = {"derive_max_move": "SO8W pad rows: RS1 0.753 mm, FLASH1 0.985 mm, intended"}`).
 >    STATUS.md candidates → "solved in p2k <pin>", D-TC7b / D-PIN recorded. Commit, push.
+
+## 8. Found during the board migrations (2026-11-20, not scheduled)
+
+- **CP2 `CHECK_PADS_ACCEPTED = {"REF-PIN": reason}`** (source: HV migration, its p2k candidate 30).
+  `p2k.check_pads` can't exempt one pad: HV J1-1 is square by user decision (pin-1 mark after the
+  ribbon renumbering) and fails the area check on 4 layers. HV accepts exactly those four lines in
+  a board-local `check_pads_j1()` in `tools/check_all.sh`; the key would replace it. An entry must
+  match, and only its own pad's lines are accepted.
+- **Regenerate order note** (sources: HV and TC migrations): the sheet scripts read
+  `lib/footprint_map.csv`, which `gen_footprints.py` writes later, so a footprint rename needs two
+  local passes. Committed files stay consistent under `regress.sh`; documenting the order (or
+  running gen_footprints' map step first) would avoid the surprise.
