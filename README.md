@@ -80,6 +80,8 @@ The board repo runs the PCB steps with `p2k make_pcb` (`PCB_STEPS`), or still wi
 `tools/make_pcb.sh` (build_pcb, gerber_to_tracks, assign_nets, pours_to_zones, place_refdes) until it
 migrates; `tools/make_pcb.sh` can become a one-line `exec tools/p2k/bin/p2k make_pcb "$@"` (the
 regression harness calls `tools/make_pcb.sh`). `check_all.sh` stays in each board repo.
+Which board-local script of the first boards each shared tool / key replaces is tabulated in
+the playbook, section 4 ("Shared tools that replace the board-local templates").
 
 `kipy -m p2k.TOOL` runs a tool under KiCad's python (the AppImage python ignores
 `PYTHONPATH`, so `kipy` inserts the package through `runpy`); `kipy SCRIPT.py` runs a board

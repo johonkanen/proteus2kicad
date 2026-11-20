@@ -95,10 +95,25 @@ Preparation (one session):
 2. `tools/gen_symbols.py` → `lib/<proj>.kicad_sym`: copy KiCad standard symbols (flattened,
    pins renumbered to the IPC ids) or draw box symbols with the Proteus pin names; power
    symbols named after the IPC power nets. `--check` = file up to date.
-3. `tools/check_symbols.py`: each refdes' symbol pin set == its IPC pin set.
-4. `tools/compare_netlists.py`: export the kicadxml netlist, compare by pad sets; report
+   Library symbols of valves: set every pin `passive` (`from_std(pin_types={"*": "passive"})`);
+   the KiCad valve envelope is drawn in every unit, so decide the heater-unit layout up front.
+   A pin that Proteus leaves unconnected is a **passive pin with a no-connect flag** on the
+   sheet, never a pin of electrical type `no_connect` (strict id `no_connect_pin_type`): KiCad
+   10 puts a wired `no_connect` pin into its own `unconnected-(…)` net, which hides the wire
+   from the netlist comparison. Parts without a KiCad THT symbol (e.g. J112, IRF820): use a
+   generic substitute with the same pin order (`Device:Q_NJFET_DSG`, `Transistor_FET:IRF740`).
+3. `p2k check_symbols`: each refdes' symbol pin set == its IPC pin set.
+4. `p2k compare_netlists`: export the kicadxml netlist, compare by pad sets; report
    wrong-net pins, merged/split nets, N/C mismatches, missing/extra parts/pins; `--sheet N`.
-   Only parts already drawn take part, so it works sheet by sheet.
+   Only parts already drawn take part, so it works sheet by sheet. Multi-unit parts whose
+   units sit on other pages: part-map column `units` (`A:2 B:5`); the pins of undrawn units
+   are pending. Strict ids `nc_joined` (joined N/C pins fail) and `net_names` (a named net
+   under another name fails instead of a "name hint" warning): `STRICT_CHECKS`.
+   ERC: `p2k erc` fails on errors and on the warning types in `ERC_FATAL_WARNINGS` (typically
+   `{"no_connect_connected", "footprint_link_issues"}`); `ERC_PENDING` holds errors expected
+   while sheets are missing. ERC alone does not see a wire that reaches other pins only through
+   a label; the netlist comparison does. `p2k sheets --check` proves every sheet is reproduced
+   by its script.
 5. `tools/make_skeleton.py`: project, sym/fp-lib-tables, root sheet with one hierarchical
    sheet per PDF page. `tools/sch_builder.py`: small API to place symbols, wires, labels,
    power symbols, no-connects with deterministic UUIDs. `tools/render_sheet.py`: sheet → PNG
@@ -109,7 +124,11 @@ Preparation (one session):
    grid (1.27 mm).
 
 Transcription (one session per few sheets): one script `tools/sheets/sheetNN.py` per sheet,
-easiest sheets first (connectors, regulators) to build the label vocabulary. After every
+easiest sheets first (connectors, regulators) to build the label vocabulary; draw the sheets
+that drive a net (supplies, outputs) before those that only use it, otherwise ERC shows interim
+`pin_not_driven` errors. Sheet helpers: `Sheet.place(..., mirror=, text_gap=, hide_value=)`,
+`sheetkit.terminal(..., symbol=, value=, justify="away")`, `sheetkit.rail()`; a pin placed on the
+middle of a wire is not connected (`Sheet.save()` warns). After every
 sheet: `compare_netlists.py --sheet N` and ERC; target 0 missing, 0 compare errors, 0 ERC
 errors on that sheet before moving on.
 
@@ -133,6 +152,15 @@ errors (warnings explained in STATUS.md).
    footprint with the Proteus renumbering onto the IPC pads – a small residual (< 0.1 mm)
    confirms the Proteus ids sit on the JEDEC pads the renumbering says, a residual of a pad
    pitch or more means the ids are on other pads (chirality; e.g. SOT-23 1 = JEDEC 3).
+   This is `p2k check_pin_order` with the board's `PIN_ORDER` table (expected side, residual,
+   angle, polarity, ideal circular sockets; `PIN_ORDER_BOTTOM`, `PIN_ORDER_MAX_MOVE`).
+   Bottom-side THT parts: spec key `bottom=True` and `BOTTOM_THT = {refdes: reason}`; strict id
+   `derive_max_move` limits how far a derived pad may move. `FP_LIB_TABLE = True` writes
+   `kicad/fp-lib-table` and makes check_footprints resolve every footprint through it. Parts
+   with Proteus pad sizes: `PROTEUS_PADS` (or hand-written `_ProteusPads` specs with spec key
+   `pads`), checked against the gerber flashes by `p2k check_pads`. Header pins numbered
+   differently in Proteus (odd / even rows swapped, a relay with other pin numbers):
+   `IPC_PIN_IDS` renames them once in `p2k ipc356`, so every tool sees the standard numbering.
 3. Default: keep KiCad pad sizes; switch to Proteus sizes only where DRC later forces it
    (user decision). Sheet scripts fill the Footprint field from the map.
 
@@ -141,10 +169,13 @@ oddities found by the fit (e.g. a SOT-23 that only fits with renumbered pins).
 
 ### Phase 3 – PCB (1–2 days)
 
-`tools/make_pcb.sh` (board repo) runs the shared tools in order (`kipy -m p2k.<step>`), re-creating
-the board from scratch every time; `make_pcb.sh --check` rebuilds into a temporary directory
-(with a copy of the `.kicad_pro`: pcbnew loads the project next to the board, which changes the
-seeded UUID sequence) and compares byte for byte:
+`p2k make_pcb` runs the shared tools in order (`PCB_STEPS`; default build_pcb, gerber_to_tracks,
+assign_nets, pours_to_zones when there are pours, place_refdes), re-creating the board from scratch
+every time and stopping at the first failing step with its full output; `p2k make_pcb --check`
+rebuilds into a temporary directory (with a copy of the `.kicad_pro`: pcbnew loads the project next
+to the board, which changes the seeded UUID sequence) and compares byte for byte. Boards started
+from the older `tools/make_pcb.sh` template reduce it to `exec tools/p2k/bin/p2k make_pcb "$@"`
+(chain any remaining steps with `&&`: `set -e` does not act inside `run() || …`):
 
 | Step | Script | What |
 |---|---|---|
@@ -152,7 +183,15 @@ seeded UUID sequence) and compares byte for byte:
 | 3b | `gerber_to_tracks` | Conductor `D01` draws → tracks; ViaPad flash + drill → vias (size from the flash; stacked duplicate vias become one); pad flashes skipped (footprints provide them) but checked to land on a pad; positive `G36` outlines → User layers (pour reference). **Pour edge strokes are not tracks.** |
 | 3c | `assign_nets` | Geometric union-find over pads, tracks, vias, pours; each group takes its pads' net; report shorts, orphans, opens. `--check` repeats on the saved board after zone fill. |
 | 3d | `pours_to_zones` | One zone per Proteus pour: outline = region grown by half the stroke minus clear holes shrunk by half the stroke (keeps clearance cut-outs and thermal-relief holes), net from 3c, solid pad connection, priority = draw order; fill. |
-| check | `check_board`, `drc` | Pads/vias/holes/free pads vs IPC (position, size, net 1:1); DRC with schematic parity: fail on shorts, unconnected, parity, and error types not in `DRC_ACCEPTED`. |
+| check | `check_board`, `drc` | Pads/vias/holes/free pads vs IPC (position, size, net 1:1), track / via nets in the file vs their copper group (strict id `track_nets`); DRC with schematic parity: fail on shorts, unconnected, parity, and error types not in `DRC_ACCEPTED` (`DRC_ACCEPTED_ITEMS` per violation, `DRC_EXPECTED_WARNINGS` exact warning counts, `PENDING` for open user decisions). |
+
+Board specials, each one config key: mounting-hole names that collide with schematic refdes
+(`HOLE_START` / `HOLE_PREFIX`, strict id `hole_refdes`), SMD test pads without a part
+(`SMD_FREE_PADS`), a pin whose two pads Proteus puts on two nets (`SPLIT_PIN_MERGES`), BGA balls
+(`BGA_REFDES`), Proteus draws not built (`REMOVED_TRACKS`, with a count for identical draws).
+Measure the smallest gaps with `kipy -m p2k.measure_gaps [--per-layer]` before setting
+`PCB_RULES`; `p2k drc --by-refdes` tabulates the pad-caused DRC errors per part when deciding
+Proteus pad sizes.
 
 Expect the first DRC to show shorts/clearance errors where KiCad pads are larger than the
 Proteus pads and reach Proteus tracks → ask the user: Proteus pad sizes for those
@@ -171,6 +210,12 @@ Done when: copper 0 shorts / 0 orphans / 0 opens after zone fill; DRC 0 shorts,
    an uncovered draw/flash or a smaller/missing drill.
 2. `ipc356_diff.py`: `kicad-cli pcb export ipcd356` vs the Proteus file: every pad/via/hole
    within 0.05 mm, same side, THT/SMD, nets 1:1 by pad sets, N/C equal.
+   Recorded decisions, each checked both ways (an entry that matches nothing fails):
+   `DRILL_SMALLER` (with a pad set: exactly those pads), `EXCELLON_MISSING` (drills missing
+   from an older Excellon file), `STACKED_VIAS`, `PHASE4_EXPECTED` (summary counts), `PENDING`.
+   `DRILL_EXCELLON` is read in its own unit (inch or metric). Strict ids: `nc_joined`,
+   `roundtrip_counts` (track draw counts per layer) and `roundtrip_pad_match` (every pad
+   flash has a counterpart of similar area; needs pad decisions first).
 3. Review: read the generating scripts, spot-check the easy-to-get-wrong places (thermal
    reliefs, floating non-conductor graphics, mounting holes, bottom-side parts, multi-pad
    pins, Kelvin parts, single-pin nets), confirm or refute every earlier finding.
@@ -214,20 +259,61 @@ scripts; the shared code has no board names in it.
 
 | In proteus2kicad (shared) | In the board repo |
 |---|---|
-| `sexpr`, `geom2d`, `gerber`, `fpgeom`, `sch_builder`, `render_sheet`, `ipc356`, `check_sources`, `bin/kipy`, `bin/kicad-cli`, `bin/p2k` | `p2k_config.py`, `tools/check_all.sh`, `tools/erc.sh` |
-| `check_symbols`, `compare_netlists`, `make_skeleton`, `symgen` (symbol generator helpers), `sheetkit` (sheet-script helpers), `pdsprj` (values, layout records, pinouts from the .pdsprj), `pdftext` (PDF words, refdes pages) | `tools/gen_symbols.py` (the symbol list), `lib/part_map.csv` and its generator, `tools/sheets/sheetNN.py` (written fresh) and board-specific sheet helpers |
-| `footprints` (generator: rules matcher, derive / build footprints, map), `check_footprints` | `tools/gen_footprints.py` = footprint `RULES` and `PROJECT` specs, `FOOTPRINT_PAD_SIZES` / `OFF_BOARD_PARTS` config keys |
-| `pcb` (paths, netlist export, net map), `build_pcb`, `gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `check_board`, `drc` | `tools/make_pcb.sh`, `PCB_RULES` / `PCB_THICKNESS` / `HOLE_*` / `FREE_PAD_*` / `DRC_ACCEPTED` config keys, board-only footprint specs |
-| `gerber_roundtrip`, `ipc356_diff` (Phase 4) | `STACKED_VIAS`, `DRILL_SMALLER`, `DRILL_EXCELLON`, `ROUNDTRIP` config keys; deviation hooks (`in_area`, `added`, `extra_vias`) for later revisions |
+| `sexpr`, `geom2d`, `gerber`, `fpgeom`, `sch_builder`, `render_sheet`, `ipc356`, `check_sources`, `bin/kipy`, `bin/kicad-cli`, `bin/p2k` | `p2k_config.py` (incl. `STRICT_CHECKS`, `PENDING`, `IPC_PIN_IDS`, `SMD_FREE_PADS`, `SPLIT_PIN_MERGES`, `BGA_REFDES`), `tools/check_all.sh` |
+| `check_symbols`, `compare_netlists`, `erc`, `sheets`, `make_skeleton`, `symgen` (symbol generator helpers), `sheetkit` (sheet-script helpers), `pdsprj` (values, layout records, pinouts from the .pdsprj), `part_map` (part-map generator), `pdftext` (PDF words, refdes pages) | `tools/gen_symbols.py` (the symbol list), `tools/make_part_map.py` (a `part_map.run` SPEC), `tools/sheets/sheetNN.py` (written fresh) and board-specific sheet helpers, `ERC_FATAL_WARNINGS` / `ERC_PENDING` |
+| `footprints` (generator: rules matcher, derive / build footprints, map), `check_footprints`, `check_pin_order`, `check_pads` | `tools/gen_footprints.py` = footprint `RULES` and `PROJECT` specs, `FOOTPRINT_PAD_SIZES` / `OFF_BOARD_PARTS` / `FP_LIB_TABLE` / `BOTTOM_THT` / `PROTEUS_PADS` / `PIN_ORDER*` / `PROTEUS_PADS_CHECK` config keys |
+| `pcb` (paths, netlist export, net map), `make_pcb`, `build_pcb`, `gerber_to_tracks`, `assign_nets`, `pours_to_zones`, `check_board`, `drc`, `measure_gaps` | `PCB_STEPS` / `PCB_RULES` / `PCB_THICKNESS` / `HOLE_*` / `FREE_PAD_*` / `DRC_ACCEPTED` / `DRC_ACCEPTED_ITEMS` / `DRC_EXPECTED_WARNINGS` / `ASSIGN_NETS_CHECK_REPORT` config keys, board-only footprint specs |
+| `gerber_roundtrip`, `ipc356_diff` (Phase 4) | `STACKED_VIAS`, `DRILL_SMALLER` (optionally with pad sets), `DRILL_EXCELLON`, `EXCELLON_MISSING`, `PHASE4_EXPECTED`, `ROUNDTRIP` config keys; deviation hooks (`in_area`, `added`, `extra_vias`) for later revisions |
 | `place_refdes` (Phase 5); recorded copper deviations in `pcb` / `gerber_to_tracks` / the checks | `REFDES_PLACEMENT`, `NONCONDUCTOR_LAYERS`, `REMOVED_TRACKS`, `REMOVED_VIAS` config keys |
 
+Shared tools that replace the board-local templates of the first boards (delete the board
+script, keep or add the config key):
+
+| Board-local (old template) | Shared | Config |
+|---|---|---|
+| `tools/make_part_map.py` (readers) | `part_map.run(SPEC)` | SPEC in the board script (`LAYOUT`, `LATIN1`, `PART_OVERRIDES`, …) |
+| `tools/erc.sh`, `erc_check.py` | `p2k erc` | `ERC_FATAL_WARNINGS`, `ERC_PENDING`, `PENDING["erc"]` |
+| `make_sheets.sh` / `check_sheets.sh` | `p2k sheets --check` | – |
+| `tools/compare.py` wrappers | `p2k compare_netlists` | strict `nc_joined`, `net_names` |
+| `fp_lib_table()` in gen_footprints | `footprints.run` | `FP_LIB_TABLE = True` |
+| `tools/check_pin_order.py` | `p2k check_pin_order` | `PIN_ORDER`, `PIN_ORDER_BOTTOM`, `PIN_ORDER_MAX_MOVE` |
+| `tools/check_proteus_pads.py` | `kipy -m p2k.check_pads` | `PROTEUS_PADS_CHECK`, `CHECK_PADS_AREA_TOL` |
+| `tools/ipc356.py` (pin renaming) | `p2k ipc356` | `IPC_PIN_IDS` |
+| `rename_holes.py` | `build_pcb` | `HOLE_START`, `HOLE_PREFIX` |
+| `remove_dot_tracks.py` | `gerber_to_tracks` | `REMOVED_TRACKS` `(reason, n)` |
+| `check_no_dangling.py` | `p2k drc` | `DRC_EXPECTED_WARNINGS` |
+| `drc_pending.py`, `roundtrip_pending.py`, `phase4_checks.py` | every judging tool | `PENDING` |
+| `check_drill_smaller.py` | `ipc356_diff`, `gerber_roundtrip` | `DRILL_SMALLER` `(reason, pads)` |
+| `roundtrip.py` (`EXPECTED_NOT_IN_EXCELLON`) | `gerber_roundtrip` | `EXCELLON_MISSING`, `EXCELLON_MISSING_LABELS` |
+| `excellon_metric.py` | `gerber_roundtrip` | `DRILL_EXCELLON` = the original file |
+| `tools/make_pcb.sh` | `p2k make_pcb [--check]` | `PCB_STEPS` |
+| `tools/measure_gaps.py` | `kipy -m p2k.measure_gaps [--per-layer]` | – |
+| `drc_pads.py` | `p2k drc --by-refdes` | – |
+| `phase4_wrap.py` (counts) | `ipc356_diff`, `gerber_roundtrip` | `PHASE4_EXPECTED`, strict `roundtrip_counts` |
+
+Stricter checks are opt-in per id (`STRICT_CHECKS`, README.md); a board turns on every id it
+passes when it migrates.
+
 Moving a tool: put it under `p2k/`, replace hard-coded board values by `p2k_config.py` keys
-(document them in README.md), grep for refdes and net names of the old board
-(`grep -nE "R87|J12|U8|ISOGND"`) to find hidden exceptions. Then the **regression test**:
-bump the submodule in `ac_psu_kicad`, switch its scripts to the moved tool, and run its
-`tools/check_all.sh` and `tools/regen_check.sh` (clean clone, regenerate every file, fail on
-any byte difference). Both must pass with ac_psu's committed files unchanged. Commit and
-push here first, then commit the submodule bumps in the board repos.
+(document them in README.md, footprint spec keys in the `footprints.py` docstring), grep for
+refdes and net names of the old board (`grep -nE "R87|J12|U8|ISOGND"`) to find hidden
+exceptions. Rules for a p2k change (`docs/CANDIDATES.md` section 0): no key, no change (a
+new behaviour hangs on a new config key, spec key or keyword, so every generated file of every
+board stays byte-identical without it); success output goes to stdout, not into committed
+reports; a board wrapper's semantics are the spec of the shared version.
+
+Then the **regression test**: commit (on a branch, unpushed is fine) and run
+`tools/regress.sh -j 5 <commit> <board>@<HEAD> ...` (README.md "Developing p2k"). Per board it
+clones the board at the given commit, points `tools/p2k` at the candidate commit, regenerates
+every generated file with the board's own scripts, runs `tools/check_all.sh` and requires a
+clean `git status`. Record the board HEADs at the start of the session and pass them as
+`BOARD@REV`, so two p2k commits are compared on the same board commits; diff the per-board logs
+(`-o DIR`) with the previous p2k commit's to review the stdout changes. Never edit
+`regress.sh` while a run is in progress (bash reads the script as it runs). A change that
+re-baselines committed board files by design states the exact files and lines and proves that
+nothing else changes (e.g. a run with scratch board repos that carry the re-baseline,
+`REGRESS_BOARDS_DIR`). Push here first, then bump `tools/p2k` in each board repo as its own commit
+with `check_all.sh` passing, then migrate the board to the new keys in a separate commit.
 
 ## 5. Pitfalls learned
 
@@ -278,6 +364,14 @@ KiCad 10 (pcbnew Python, kicad-cli):
 - No SVG converter? librsvg + cairo via ctypes renders `kicad-cli … export svg` to PNG.
 
 Process:
+- Chain the PCB steps so the first failure stops the run (`p2k make_pcb` does): in a shell
+  template, `set -e` does not act inside `run() || …`, so a failing gerber_to_tracks let the
+  later steps run on and a filtered `--check` log hid its ERROR line.
+- KiCad DRC reports one violation per track against its closest pad only, so a conflict with
+  another pad can hide behind a neighbour; `measure_gaps` lists the smallest gaps per item pair.
+- pcbnew re-derives track nets from the pads when it loads a board, so a track net edited in the
+  board file is invisible to every pcbnew-based check; strict id `track_nets` (check_board reads
+  the nets from the file text) catches it.
 - Courtyard overlaps are normal on a dense Proteus placement (Proteus has no IPC-7351
   courtyards); accept them explicitly in `drc.py`, with reasons.
 - Silk warnings are normal with KiCad default refdes positions.
@@ -318,6 +412,6 @@ its README.md. Do Phase 0 now: inventory the sources (fill in the checklist of p
 section 2), write PLAN.md for this board from the playbook (phases, risks, model plan,
 effort), add proteus2kicad as submodule tools/p2k, write p2k_config.py, run p2k ipc356 and
 p2k check_sources, and create tools/check_all.sh. Tool changes go into proteus2kicad with
-ac_psu_kicad as the regression test (playbook section 4). End with STATUS.md, next_prompt.md
+its tools/regress.sh run over the finished boards as the regression test (playbook section 4). End with STATUS.md, next_prompt.md
 (Phase 1 preparation prompt) and a commit.
 ```
