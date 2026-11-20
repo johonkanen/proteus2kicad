@@ -8,7 +8,9 @@
   * drill gerbers: ViaDrill / ComponentDrill / plated OtherDrill (free pads, plated holes) /
     NonPlated (unplated holes) flashes match the IPC drills (position within TOL, diameter
     equal);
-  * the outline gerber spans the OUTLINE_RECT of p2k_config.py.
+  * the outline gerber spans the OUTLINE_RECT of p2k_config.py;
+  * SMD_FREE_PADS (optional): those SMD free pads are matched with the SMDPad flashes of their
+    side only (no OtherPad / OtherDrill flash), and all of them must be in the IPC table.
 
 Config keys: CADCAM, COPPER, DRILL_PLATED, DRILL_NONPLATED (None: no unplated drill file),
 OUTLINE, OUTLINE_RECT; HOLES_PLATED (ipc356) says which drill file has the mounting holes.
@@ -21,7 +23,7 @@ import re
 import sys
 from collections import Counter
 
-from . import board, gerber
+from . import board, gerber, pcb
 
 CFG = board.config()
 CADCAM = board.path(CFG.CADCAM)
@@ -53,7 +55,12 @@ def match(flashes, records, what, errors, drill=False):
 def main():
     with open(board.path("reference", "ipc356_pads.json")) as f:
         pads = json.load(f)["pads"]
-    by_kind = lambda *k: [p for p in pads if p["kind"] in k]
+    # SMD_FREE_PADS (SMD test pads without a part): SMDPad flashes of their side, no OtherPad /
+    # OtherDrill flash (matched with the SMD pads below). Records are told by their fields, not by
+    # the kind, so a board wrapper that renamed the kind before its migration keeps working.
+    smd_free = [p for p in pads if pcb.is_smd_free_pad(p)]
+    sf = pcb.smd_free_pads()
+    by_kind = lambda *k: [p for p in pads if p["kind"] in k and not pcb.is_smd_free_pad(p)]
     tht_pads = [p for p in pads if p["kind"] == "pad" and p["is_tht"]]
     errors = []
     summary = []
@@ -68,6 +75,10 @@ def main():
     if len(ids) != 1 or None in ids:
         errors.append(f"SameCoordinates ids differ: {dict(ids)}")
     summary.append(f"{len(files)} gerbers, one SameCoordinates id")
+    if sf:
+        if len(smd_free) != len(sf):
+            errors.append(f"SMD_FREE_PADS: {len(smd_free)} of {len(sf)} found as SMD pads without a part in the IPC table")
+        summary.append(f"{len(smd_free)} SMD pads without a part (SMD_FREE_PADS) matched as SMD pads only")
 
     for name, layer, _user in CFG.COPPER:
         side = SIDE.get(layer)

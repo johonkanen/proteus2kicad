@@ -21,6 +21,9 @@ Parts whose symbol is excluded from the board (e.g. an off-board transformer) ar
 Multi-unit parts drawn on several sheets: with a `units` column in lib/part_map.csv
 ("A:2 B:5 ...", unit letter : PDF page), the pins of a unit that is not drawn are pending
 (warnings) when its page is outside --sheet or with --allow-missing, as missing parts are.
+SPLIT_PIN_MERGES (optional, {(refdes, pin): (kept net, merged net)}): pins whose two pads Proteus
+puts on two nets, drawn as one pin; the IPC split pins must equal the key and the merged nets are
+joined into the kept nets before the comparison (printed).
 Strict checks (STRICT_CHECKS): `nc_joined` - an unconnected-(...) net with more than one pin
 fails (no-connect pins wired together pass otherwise: each is counted as a lone N/C pin);
 `net_names` - a "name hint" (a named KiCad net equal to an IPC net of another name) fails.
@@ -67,7 +70,35 @@ def load_ipc():
             continue
         net = NC if p["net_raw"] == "N/C" else (p["net"] or NONET)
         pin_net[(p["refdes"], p["pin"])] = net
+    if globals()["load_ipc"] is _LOAD_IPC:   # not under a board wrapper with its own merge code
+        pin_net = split_pin_merges(ipc["pads"], pin_net)
     return pin_net
+
+
+def split_pin_merges(pads, pin_net):
+    """SPLIT_PIN_MERGES ({(refdes, pin): (kept net, merged net)}): the IPC pins whose pads carry two
+    nets must equal the key (both ways, exactly those nets); each merged net is joined into its
+    kept net (with all its pins) and the split pins get the kept net. Printed (stdout)."""
+    from . import pcb
+    merges = pcb.split_pin_merges()
+    if not merges:
+        return pin_net
+    errors = pcb.split_pin_errors(pads)
+    if errors:
+        sys.exit("compare_netlists (SPLIT_PIN_MERGES): " + "; ".join(errors))
+    rename = {merged: kept for kept, merged in merges.values()}
+    notes = []
+    for (ref, pin), (kept, merged) in sorted(merges.items()):
+        others = sorted(f"{r}-{p}" for (r, p), n in pin_net.items() if n == merged and (r, p) != (ref, pin))
+        notes.append(f"{ref}-{pin} {kept} + {merged}" + (f" (with {' '.join(others)})" if others else ""))
+    print(f"accepted (SPLIT_PIN_MERGES): {len(merges)} merged IPC net pairs: " + "; ".join(notes))
+    out = {rp: rename.get(n, n) for rp, n in pin_net.items()}
+    for rp, (kept, _) in merges.items():
+        out[rp] = kept
+    return out
+
+
+_LOAD_IPC = load_ipc
 
 
 def export_netlist(sch, out):

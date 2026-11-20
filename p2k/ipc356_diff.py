@@ -127,7 +127,7 @@ def main(argv=None, added=None, extra_vias=None):
     copper_layers = len(bc.copper())
     free_prefix = getattr(cfg, "FREE_PAD_PREFIX", "FP") if getattr(cfg, "FREE_PAD_FOOTPRINT", None) else None
 
-    prot = bc.ipc_records()
+    prot = bc.ipc_records(merge=False)   # the Proteus nets as written (SPLIT_PIN_MERGES: batch 8)
     if args.kicad:
         kic = parse_kicad(args.kicad, copper_layers, free_prefix)
     else:

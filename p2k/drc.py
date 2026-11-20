@@ -5,18 +5,41 @@ Writes <reports>/drc.json (full kicad-cli report) and prints a count per violati
 Fails on: any short (shorting_items), any unconnected item, any schematic parity issue, and
 any other error-severity violation whose type is not in the config key DRC_ACCEPTED
 ({type: reason}; each accepted type is justified there and in the board's STATUS.md).
-Warnings are only counted.
+Warnings are only counted. SPLIT_PIN_MERGES (optional): exactly one unconnected item per KiCad
+net of such a pin (its two pads have no copper between them) is accepted (printed).
 
 Usage: tools/p2k/bin/p2k drc [-v]
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import Counter
 
 from . import board
 from . import pcb
+
+
+NET = re.compile(r"\[([^]]*)\]")
+
+
+def split_pin_unconnected(unconnected):
+    """SPLIT_PIN_MERGES: exactly one unconnected item per KiCad net of such a pin (the net from the
+    schematic netlist), every item of it on that net. -> (other items, accepted texts, errors)"""
+    _, nets = pcb.export_netlist()
+    want = pcb.split_pin_nets(nets)
+    rest, seen = [], []
+    for u in unconnected:
+        names = {m.group(1) for i in u["items"] for m in [NET.search(i["description"])] if m}
+        if len(names) == 1 and next(iter(names)) in want:
+            seen.append(next(iter(names)))
+        else:
+            rest.append(u)
+    errors = []
+    if sorted(seen) != sorted(want):
+        errors.append(f"SPLIT_PIN_MERGES: unconnected items on {sorted(seen)}, expected one on each of {sorted(want)}")
+    return rest, [f"{want[n]} {n}" for n in sorted(seen)], errors
 
 
 def main(argv=None):
@@ -33,12 +56,17 @@ def main(argv=None):
         d = json.load(f)
     viol = d["violations"]
     unconnected = d.get("unconnected_items", [])
+    n_unconnected = len(unconnected)
     parity = d.get("schematic_parity", [])
     by_type = Counter((v["type"], v["severity"]) for v in viol)
     errors = []
     shorts = by_type.get(("shorting_items", "error"), 0)
     if shorts:
         errors.append(f"{shorts} shorts")
+    split_acc = []
+    if unconnected and pcb.split_pin_merges():
+        unconnected, split_acc, split_err = split_pin_unconnected(unconnected)
+        errors += split_err
     if unconnected:
         errors.append(f"{len(unconnected)} unconnected items")
     if parity:
@@ -46,7 +74,7 @@ def main(argv=None):
     for (t, sev), n in sorted(by_type.items()):
         if sev == "error" and t != "shorting_items" and t not in accepted:
             errors.append(f"{n} {t}")
-    print(f"drc: {len(viol)} violations, {shorts} shorts, {len(unconnected)} unconnected, "
+    print(f"drc: {len(viol)} violations, {shorts} shorts, {n_unconnected} unconnected, "
           f"{len(parity)} parity issues ({pcb.rel(report)})")
     for (t, sev), n in sorted(by_type.items(), key=lambda kv: (kv[0][1], -kv[1])):
         note = f"  accepted: {accepted[t]}" if sev == "error" and t in accepted else ""
@@ -60,6 +88,8 @@ def main(argv=None):
             print("drc: unconnected: " + " / ".join(i["description"] for i in u["items"]))
         for p in parity[:20]:
             print(f"drc: parity: {p['description']}: " + " / ".join(i["description"] for i in p["items"]))
+    if split_acc and not errors:
+        print("drc: accepted (SPLIT_PIN_MERGES): " + ", ".join(split_acc))
     for e in errors:
         print("drc: ERROR " + e)
     print("drc: " + ("FAILED" if errors else "OK"))

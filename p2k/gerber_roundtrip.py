@@ -293,7 +293,7 @@ def load_footprints():
 def load_ipc():
     """(pads per KiCad copper layer, vias) from the IPC records (through the configured filter).
     Free pads and holes count as pads (they carry copper on every layer)."""
-    recs = bc.ipc_records()
+    recs = bc.ipc_records(merge=False)   # the Proteus nets as written (Phase 4; SPLIT_PIN_MERGES: batch 8)
     pads = {k: [] for _, k in S.layers}
     top, bottom = S.layers[0][1], S.layers[-1][1]
     for p in recs:

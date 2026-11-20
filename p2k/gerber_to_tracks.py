@@ -14,8 +14,9 @@ p2k.gerber and, on the board made by p2k.build_pcb:
     cross-checked against the IPC via records;
   - component pad flashes are not converted (the footprints provide the pads), but every
     flash must land on a footprint pad on that layer (and OtherPad flashes on a board-only
-    footprint: mounting hole or free pad); the plated and unplated drill flashes must match a
-    pad hole or via;
+    footprint: mounting hole or free pad; so are the top SMDPad flashes of the SMD_FREE_PADS test
+    pads, see smd_free_flashes()); the plated and unplated drill flashes must match a pad hole or
+    via;
   - NonConductor draws -> graphic lines on the copper layer, no net (or on the layer that
     NONCONDUCTOR_LAYERS names for that copper layer, e.g. silk; identical moved lines once);
   - recorded deviations (config, see p2k.pcb): REMOVED_TRACKS Conductor draws and REMOVED_VIAS
@@ -150,7 +151,37 @@ def load_layer(gname, layer, user):
 
 
 def load_copper():
-    return [load_layer(*c) for c in bc.copper()]
+    layers = [load_layer(*c) for c in bc.copper()]
+    smd_free_flashes(layers)
+    return layers
+
+
+def smd_free_flashes(layers):
+    """SMD_FREE_PADS (SMD test pads without a part): their Top Copper SMDPad flashes go to the
+    OtherPad list, so they must land on a board-only pad. Exactly one round SMDPad flash of the
+    IPC pad size at each listed position on the top layer, none on the other layers. Idempotent (a
+    board wrapper that moved them already before its migration is accepted)."""
+    recs = [p for p in bc.ipc_records() if bc.is_smd_free_pad(p)] if bc.smd_free_pads() else []
+    if not recs:
+        return
+    top = layers[0].layer
+
+    def at(f):
+        return [p for p in recs if abs(f.x - p["x_mm"]) <= 0.01 and abs(f.y - p["y_mm"]) <= 0.01]
+
+    for cl in layers:
+        flashes = [f for f in cl.pads + cl.other_pads if at(f)]
+        want = len(recs) if cl.layer == top else 0
+        bad = [f for f in flashes if f.ap.shape != "C" or abs(f.ap.params[0] - at(f)[0]["pad_w"]) > 0.001
+               or not f.ap.function.startswith("SMDPad")]
+        hit = {id(p) for f in flashes for p in at(f)}
+        if len(flashes) != want or bad or (want and len(hit) != len(recs)):
+            raise SystemExit(f"gerber_to_tracks: {cl.layer}: {len(flashes)} flashes at the SMD_FREE_PADS positions "
+                             f"(want {want}, one per pad), {len(bad)} not round SMD pads of the IPC size")
+        moved = [f for f in cl.pads if at(f)]
+        if moved:
+            cl.pads = [f for f in cl.pads if not at(f)]
+            cl.other_pads += moved
 
 
 def load_drills():

@@ -15,7 +15,9 @@ revision) and is used by every tool that reads them.
 
 Config keys used here: PROJECT, CADCAM, COPPER, DRILL_PLATED, DRILL_NONPLATED, OUTLINE; the
 recorded copper deviations NONCONDUCTOR_LAYERS, REMOVED_TRACKS, REMOVED_VIAS (optional; used by
-gerber_to_tracks and accepted by check_board, ipc356_diff, gerber_roundtrip).
+gerber_to_tracks and accepted by check_board, ipc356_diff, gerber_roundtrip); SMD_FREE_PADS (SMD test
+pads without a part) and SPLIT_PIN_MERGES (pins on two IPC nets joined by the schematic; applied by
+ipc_records()), both optional.
 """
 import glob
 import json
@@ -85,12 +87,92 @@ def gerber_path(name):
     return paths[0]
 
 
-def ipc_records():
-    """IPC records (reference/ipc356_pads.json), through the configured filter if any."""
+def ipc_records(merge=True):
+    """IPC records (reference/ipc356_pads.json), through the configured filter if any, then with
+    the SPLIT_PIN_MERGES of the config applied (merge=False: the Proteus nets as written, for the
+    independent Phase 4 comparison). See merge_split_pins()."""
     with open(_board.path("reference", "ipc356_pads.json")) as f:
         recs = json.load(f)["pads"]
     fn = _over.get("records")
-    return fn(recs) if fn else recs
+    if fn:
+        recs = fn(recs)
+    merges = split_pin_merges()
+    if merge and merges:
+        merged = {m for _, m in merges.values()}
+        if fn and not split_pins(recs) and not any(p["net"] in merged for p in recs):
+            return recs   # the board's own record filter has joined them already (wrapper before migration)
+        errors = split_pin_errors(recs)
+        if errors:
+            raise SystemExit("p2k (SPLIT_PIN_MERGES): " + "; ".join(errors))
+        recs = merge_split_pins(recs)
+    return recs
+
+
+# ---------------------------------------------------------------- SMD test pads, split pins (B4, B5)
+
+def smd_free_pads():
+    """SMD_FREE_PADS ({(x, y): raw IPC net}, IPC frame, exact IPC coordinates): SMD pads without
+    a part (test pads); {} without the key."""
+    return getattr(cfg(), "SMD_FREE_PADS", {}) or {}
+
+
+def is_smd_free_pad(p):
+    """True for an IPC record that is one of the SMD_FREE_PADS: blank refdes, SMD (327), top side,
+    unplated, no drill, at a listed position with the listed raw net."""
+    sf = smd_free_pads()
+    key = (p["x_mm"], p["y_mm"])
+    return (bool(sf) and not p["refdes"] and not p["is_tht"] and p["side"] == "top" and not p["plated"]
+            and not p["drill"] and key in sf and p["net_raw"] == sf[key])
+
+
+def split_pin_merges():
+    """SPLIT_PIN_MERGES ({(refdes, pin): (kept net, merged net)}, nets after NET_ALIASES): pins
+    whose pads Proteus puts on two nets and the schematic joins (e.g. a two-pad terminal drawn as
+    one pin); {} without the key."""
+    return getattr(cfg(), "SPLIT_PIN_MERGES", {}) or {}
+
+
+def split_pins(recs):
+    """{(refdes, pin): {nets}} of the pins whose pad records carry more than one net."""
+    nets = {}
+    for p in recs:
+        if p["kind"] == "pad":
+            nets.setdefault((p["refdes"], p["pin"]), set()).add(p["net"])
+    return {k: v for k, v in nets.items() if len(v) > 1}
+
+
+def split_pin_errors(recs):
+    """The split pins of the records must equal SPLIT_PIN_MERGES, both ways, with exactly the
+    listed two nets. -> [error]"""
+    merges, split = split_pin_merges(), split_pins(recs)
+    errors = []
+    for k in sorted(set(split) | set(merges)):
+        if k not in merges:
+            errors.append(f"IPC pin {k[0]}-{k[1]} has pads on {sorted(split[k])}, not in SPLIT_PIN_MERGES")
+        elif split.get(k) != set(merges[k]):
+            errors.append(f"SPLIT_PIN_MERGES {k[0]}-{k[1]} {merges[k]} != IPC pad nets {sorted(split.get(k, []))}")
+    return errors
+
+
+def merge_split_pins(recs):
+    """Records with every merged net of SPLIT_PIN_MERGES renamed to its kept net (pads, vias, free
+    pads; other pins of the merged net included)."""
+    rename = {merged: kept for kept, merged in split_pin_merges().values()}
+    return [dict(p, net=rename[p["net"]]) if p["net"] in rename else p for p in recs]
+
+
+def split_pin_nets(nets):
+    """{KiCad net name: "REF-PIN"} of the SPLIT_PIN_MERGES pins in an export_netlist() net map;
+    every pin must be found on a net."""
+    merges = split_pin_merges()
+    out = {}
+    for name, nodes in nets.items():
+        for rp in nodes:
+            if tuple(rp) in merges:
+                out[name] = f"{rp[0]}-{rp[1]}"
+    if len(out) != len(merges):
+        raise SystemExit(f"p2k: SPLIT_PIN_MERGES pins {sorted(merges)} found on {len(out)} KiCad nets")
+    return out
 
 
 def export_netlist():

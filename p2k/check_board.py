@@ -8,7 +8,8 @@ Pads:  every IPC component pad has a footprint pad with that refdes and pin id w
 Holes: every IPC 'hole' record has exactly one board-only pad at its position with the IPC
        drill and pad size, plated as the IPC record says, no net.
 Free pads: every IPC 'free_pad' record has exactly one board-only pad there with the IPC
-       drill and pad size, plated, on the IPC net (mapped to KiCad through the pads).
+       drill and pad size, plated, on the IPC net (mapped to KiCad through the pads); the
+       SMD_FREE_PADS records instead an SMD pad on F.Cu only with the IPC size and net.
 Vias:  every IPC via has a board via at its position (0.01 mm) with the IPC drill and pad
        size on the IPC net (except the REMOVED_VIAS of the config: no board via there), and
        every board via is an IPC via.
@@ -91,9 +92,17 @@ def check_pads(board, recs, errors, added):
 
 
 def check_board_only(board, recs, mapping, kind, errors):
-    """IPC 'hole' / 'free_pad' records vs the board-only footprint pads."""
+    """IPC 'hole' / 'free_pad' records vs the board-only footprint pads (SMD_FREE_PADS: see
+    check_smd_free())."""
     want = [p for p in recs if p["kind"] == kind]
     found = 0
+    if kind == "free_pad":
+        smd = [p for p in want if bc.is_smd_free_pad(p)]
+        if smd:
+            found += check_smd_free(board, smd, mapping, errors)
+            want = [p for p in want if p not in smd]
+            n, f = check_board_only(board, want, mapping, kind, errors)
+            return n + len(smd), found + f
     for h in want:
         hit = []
         for fp in board.GetFootprints():
@@ -116,6 +125,31 @@ def check_board_only(board, recs, mapping, kind, errors):
                           f"plated {pad.GetAttribute() == pcbnew.PAD_ATTRIB_PTH}, net {pad.GetNetname()!r} "
                           f"(want {h['drill']}/{h['pad_w']} mm, plated {h['plated']}, net {net!r})")
     return len(want), found
+
+
+def check_smd_free(board, smd, mapping, errors):
+    """SMD_FREE_PADS records: exactly one board-only pad at each, SMD, copper on F.Cu only, the
+    IPC size, on the IPC net. -> number found correct."""
+    found = 0
+    for h in smd:
+        hit = [(fp, pad) for fp in board.GetFootprints() if fp.IsBoardOnly() for pad in fp.Pads()
+               if math.hypot(mm(pad.GetPosition().x) - h["x_mm"], -mm(pad.GetPosition().y) - h["y_mm"]) < 0.01]
+        if len(hit) != 1:
+            errors.append(f"SMD test pad at ({h['x_mm']}, {h['y_mm']}): {len(hit)} board pads")
+            continue
+        fp, pad = hit[0]
+        net = mapping.get(h["net"])
+        cu = [l for l in range(pcbnew.PCB_LAYER_ID_COUNT) if pcbnew.IsCopperLayer(l) and pad.IsOnLayer(l)]
+        if pad.GetAttribute() != pcbnew.PAD_ATTRIB_SMD or cu != [pcbnew.F_Cu] \
+                or abs(mm(pad.GetSizeX()) - h["pad_w"]) > 1e-3 or abs(mm(pad.GetSizeY()) - h["pad_h"]) > 1e-3 \
+                or pad.GetNetname() != (net or "?"):
+            errors.append(f"{fp.GetReference()}: SMD test pad attribute {pad.GetAttribute()}, copper layers {cu}, "
+                          f"{mm(pad.GetSizeX())} mm, net {pad.GetNetname()!r} "
+                          f"(want SMD on F.Cu only, {h['pad_w']} mm, net {net!r})")
+        else:
+            found += 1
+    print(f"check_board: {len(smd)} SMD test pads (SMD_FREE_PADS) checked as SMD pads on F.Cu (size, net)")
+    return found
 
 
 def check_copper(board, recs, mapping, errors, extra_vias):
@@ -191,6 +225,11 @@ def main(argv=None, added=None, extra_vias=None):
     worst, npads, mapping = check_pads(board, recs, errors, added or {})
     nholes, _ = check_board_only(board, recs, mapping, "hole", errors)
     nfree, _ = check_board_only(board, recs, mapping, "free_pad", errors)
+    sf = bc.smd_free_pads()
+    if sf:
+        nsmd = sum(1 for p in recs if p["kind"] == "free_pad" and bc.is_smd_free_pad(p))
+        if nsmd != len(sf):
+            errors.append(f"{nsmd} of {len(sf)} SMD_FREE_PADS found as SMD free pads in the IPC")
     nbo = sum(1 for fp in board.GetFootprints() if fp.IsBoardOnly())
     if nbo != nholes + nfree:
         errors.append(f"{nbo} board-only footprints, {nholes} IPC holes + {nfree} IPC free pads")

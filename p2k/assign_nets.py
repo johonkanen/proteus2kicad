@@ -21,6 +21,10 @@ Default mode (after gerber_to_tracks.py), Proteus geometry:
 Report: reports/assign_nets.txt (default mode writes the stage A/B sections, --check
 replaces its own section at the end).
 
+SPLIT_PIN_MERGES (optional): the open of such a pin's KiCad net is accepted exactly when it has
+two groups and the pin's two pads lie in different groups (listed as "accepted open" in the
+report; see accept_split_pin_opens()).
+
 Board-only pads (mounting holes, free pads) take part as copper; a board-only pad without a
 net (mounting hole ring) gives its group no net.
 
@@ -215,7 +219,30 @@ def analyse(items, uf):
     for net, gs in sorted(pad_groups.items()):
         if len(gs) > 1 and not bc.is_unconnected_net(net):
             res["opens"].append((net, sorted(gs)))
+    if bc.split_pin_merges() and globals()["analyse"] is _ANALYSE:   # not under a board wrapper's own D1 code
+        accept_split_pin_opens(items, res)
     return res
+
+
+def accept_split_pin_opens(items, res):
+    """SPLIT_PIN_MERGES: the two pads of such a pin have no copper between them in Proteus, so its
+    KiCad net is open. Accepted exactly when the open has two groups and the pin's two pads lie in
+    different groups; any other open stays."""
+    merges = bc.split_pin_merges()
+    group_of = {i: g for g, members in res["groups"].items() for i in members}
+    pins = defaultdict(list)   # KiCad net -> [(label, group)] of the split pins' pads
+    for i, it in enumerate(items):
+        if it.kind == "pad" and (it.obj.GetParentFootprint().GetReference(), it.obj.GetNumber()) in merges:
+            pins[it.net].append((it.label, group_of[i]))
+    keep, acc = [], []
+    for net, gs in res["opens"]:
+        pads = pins.get(net, [])
+        if len(gs) == 2 and len(pads) == 2 and {g for _, g in pads} == set(gs):
+            acc.append(f"{net}: {pads[0][0]} pads in two groups")
+        else:
+            keep.append((net, gs))
+    res["opens"] = keep
+    res["split_accepted"] = acc
 
 
 def describe(name, items, res, out):
@@ -238,11 +265,15 @@ def describe(name, items, res, out):
             pads = sorted(items[i].label for i in groups[g] if items[i].kind == "pad")
             parts.append("[" + " ".join(pads[:5]) + (" ..." if len(pads) > 5 else "") + "]")
         out.append(f"  open {net}: {len(gs)} groups " + " ".join(parts))
+    for a in res.get("split_accepted", []):
+        out.append("  accepted open (SPLIT_PIN_MERGES): " + a)
 
 
 def summary(name, res):
+    n = len(res.get("split_accepted", []))
     return (f"assign_nets: {name}: {len(res['groups'])} groups, {len(res['shorts'])} shorts, "
-            f"{len(res['orphans'])} orphans, {len(res['opens'])} opens")
+            f"{len(res['orphans'])} orphans, {len(res['opens'])} opens"
+            + (f" (+{n} accepted SPLIT_PIN_MERGES opens)" if n else ""))
 
 
 def ipc_via_nets(board):
@@ -363,6 +394,8 @@ def main():
     print("assign_nets: " + ("OK" if ok else "FAILED") + f" (report {bc.rel(report_path())})")
     sys.exit(0 if ok else 1)
 
+
+_ANALYSE = analyse
 
 if __name__ == "__main__":
     main()

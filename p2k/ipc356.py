@@ -21,6 +21,10 @@ Applied fix-ups (tables in the board's p2k_config.py):
 Records with a blank refdes: `via` (net, drill in VIA_DRILLS), `free_pad` (net, other drill,
 e.g. wire pads) and `hole` (no net; HOLE_DRILLS / HOLES_PLATED checked).
 
+--check exceptions (optional keys, accepted exactly): SPLIT_PIN_MERGES ({(refdes, pin): (kept net,
+merged net)}: the pins whose pads carry two nets equal the key, both ways) and SMD_FREE_PADS
+({(x, y): raw net}: unplated top SMD free_pad records without drill, every entry found).
+
 Coordinates are kept exactly as in the IPC file: mm, Y axis pointing up
 (KiCad's Y points down; flip when placing).
 
@@ -302,8 +306,12 @@ def outputs(net_names, pads):
     }
 
 
-def self_check(net_names, pads, out_dir):
+def self_check(net_names, pads, out_dir, accepted=None):
+    """-> (stats, errors). `accepted` (a list) receives the accepted exceptions (SPLIT_PIN_MERGES,
+    SMD_FREE_PADS) as text lines for stdout."""
     errors = []
+    acc = accepted if accepted is not None else []
+    smd_free = set()
     st = stats(net_names, pads)
     for k, v in EXPECTED.items():
         if st[k] != v:
@@ -328,8 +336,19 @@ def self_check(net_names, pads, out_dir):
         if p["kind"] == "pad":
             pin_nets[(p["refdes"], p["pin"])].add(p["net_raw"])
     conflicts = sorted(k for k, n in pin_nets.items() if len(n) > 1)
-    if conflicts:
+    from . import pcb
+    if conflicts and pcb.split_pin_merges():
+        # SPLIT_PIN_MERGES: exactly these pins, each on exactly its two nets (after NET_ALIASES)
+        split_errors = pcb.split_pin_errors(pads)
+        if split_errors:
+            errors += split_errors
+        else:
+            acc.append(f"{len(conflicts)} pins with pads on two nets (SPLIT_PIN_MERGES): "
+                       + ", ".join(f"{r}-{p}" for r, p in conflicts))
+    elif conflicts:
         errors.append(f"same refdes-pin on different nets: {conflicts}")
+    elif pcb.split_pin_merges():
+        errors.append(f"SPLIT_PIN_MERGES lists {sorted(pcb.split_pin_merges())} but the IPC has no split pins")
     for p in pads:
         exp = TRUNCATED_NETS.get(p["refdes"])
         if exp and p["net"] != exp:
@@ -344,10 +363,19 @@ def self_check(net_names, pads, out_dir):
     for p in pads:
         if p["kind"] == "via" and not (p["plated"] and p["drill"] in VIA_DRILLS):
             errors.append(f"via at ({p['x_mm']}, {p['y_mm']}): drill {p['drill']}")
-        if p["kind"] == "free_pad" and not (p["plated"] and p["drill"] in FREE_PAD_DRILLS):
+        if p["kind"] == "free_pad" and pcb.is_smd_free_pad(p):
+            smd_free.add((p["x_mm"], p["y_mm"]))
+        elif p["kind"] == "free_pad" and not (p["plated"] and p["drill"] in FREE_PAD_DRILLS):
             errors.append(f"free pad at ({p['x_mm']}, {p['y_mm']}): drill {p['drill']}")
         if p["kind"] == "hole" and (p["plated"] != HOLES_PLATED or p["drill"] not in HOLE_DRILLS):
             errors.append(f"hole at ({p['x_mm']}, {p['y_mm']}): drill {p['drill']}")
+
+    sf = pcb.smd_free_pads()
+    if smd_free:
+        acc.append(f"{len(smd_free)} SMD pads without a part (SMD_FREE_PADS)")
+    for key in sorted(set(sf) - smd_free):
+        errors.append(f"SMD_FREE_PADS entry {key} {sf[key]}: no matching IPC record "
+                      "(blank refdes, SMD, top, unplated, that raw net)")
 
     for name, text in outputs(net_names, pads).items():
         f = out_dir / name
@@ -369,8 +397,11 @@ def main():
     # replaced parse() with its own renaming (tube_pi_fxloop tools/ipc356.py) has done it already
     renamed = pin_ids(pads) if parse is _PARSE else {}
     if args.check:
-        st, errors = self_check(net_names, pads, args.out)
+        accepted = []
+        st, errors = self_check(net_names, pads, args.out, accepted)
         print("ipc356: " + ", ".join(f"{k}={v}" for k, v in st.items()))
+        for a in accepted:
+            print("  accepted: " + a)
         for e in errors:
             print("  FAIL " + e)
         print("ipc356: " + ("FAIL" if errors else "OK"))
